@@ -23,7 +23,8 @@ let prefs: UserDefaults = {
                         "notifyPermission": true, "notifyDone": true, "notifyEnded": true, "notifyUsage": true,
                         "sounds": true, "toastSeconds": 9.0, "meetingQuiet": true, "answerInHUD": true,
                         "hotkey": 0, "menuBar": true, "loginItem": true,
-                        "heavyBurn": 1_000_000.0, "groupByWorkspace": true])
+                        "heavyBurn": 1_000_000.0, "groupByWorkspace": true,
+                        "idleMinutes": 10.0, "firstPrompt": "", "autoEndOld": false, "syncDevices": true])
   return d
 }()
 
@@ -84,8 +85,42 @@ struct Session: Identifiable, Equatable {
   var name: String { title.isEmpty ? folder : title }
 }
 
-struct Usage: Equatable { var tokens = 0, today = 0, context = 0, lastText = "" }
-struct Limit: Equatable { let pct: Double, resets: Date; var eta: TimeInterval? }
+struct Usage: Equatable { var tokens = 0, today = 0, context = 0, lastText = "", cost = 0.0, todayCost = 0.0 }
+
+struct Device: Identifiable, Equatable {
+  let id: String, name: String, updated: Date, tokens: Int, cost: Double, live: Int
+  var mine = false
+  var online: Bool { Date().timeIntervalSince(updated) < 180 }
+}
+
+let deviceDir = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Claude HUD/devices")
+
+/// "15:42" today, "Sat 14:00" later.
+func clock(_ d: Date) -> String {
+  let f = DateFormatter()
+  f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : "EEE HH:mm"
+  return f.string(from: d)
+}
+
+func money(_ d: Double) -> String { d >= 100 ? String(format: "$%.0f", d) : String(format: "$%.2f", d) }
+
+/// API list price per million tokens (input, output, cache read). Cache writes cost 1.25× input (5 min) / 2× (1 h).
+func price(_ model: String) -> (i: Double, o: Double, r: Double) {
+  if model.contains("fable") || model.contains("mythos") { return (10, 50, 0.25) }
+  if model.contains("opus-5-5") { return (4, 20, 0.2) }
+  if model.contains("opus-4-1") || model.contains("opus-4-2025") { return (15, 75, 1.5) }
+  if model.contains("opus") { return (5, 25, 0.5) }
+  if model.contains("sonnet-5") { return (2, 10, 0.2) }
+  if model.contains("sonnet") { return (3, 15, 0.3) }
+  if model.contains("haiku") { return (1, 5, 0.1) }
+  return (5, 25, 0.5)
+}
+struct Limit: Equatable {
+  let pct: Double, resets: Date
+  var out: Date?        // when it runs out at the current pace (only if before the reset)
+  var paced = false     // a pace is known; with out == nil that means "lasts until reset"
+  var eta: TimeInterval? { out?.timeIntervalSinceNow }
+}
 
 struct Toast: Identifiable, Equatable {
   let id = UUID()
@@ -118,7 +153,7 @@ func processCwd(_ pid: Int32) -> String? {
 final class TokenCounter {
   private var day = Date.distantPast
   private var offsets: [String: UInt64] = [:]
-  private var msgs: [String: [String: (n: Int, today: Bool)]] = [:]
+  private var msgs: [String: [String: (n: Int, today: Bool, cost: Double)]] = [:]
   private var usage: [String: Usage] = [:]
   private let iso: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
@@ -163,10 +198,17 @@ final class TokenCounter {
       let n = { (k: String) in us[k] as? Int ?? 0 }
       u.context = n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens")
       let isToday = (j["timestamp"] as? String).flatMap(iso.date(from:)).map { $0 >= day } ?? true
-      m[id] = (n("input_tokens") + n("cache_creation_input_tokens") + n("output_tokens"), isToday)
+      let cw = n("cache_creation_input_tokens")
+      let cw1h = min(cw, (us["cache_creation"] as? [String: Any])?["ephemeral_1h_input_tokens"] as? Int ?? 0)
+      let pr = price(msg["model"] as? String ?? "")
+      let cost = (Double(n("input_tokens")) * pr.i + Double(n("output_tokens")) * pr.o + Double(cw - cw1h) * pr.i * 1.25
+        + Double(cw1h) * pr.i * 2 + Double(n("cache_read_input_tokens")) * pr.r) / 1e6
+      m[id] = (n("input_tokens") + cw + n("output_tokens"), isToday, cost)
     }
     u.tokens = m.values.reduce(0) { $0 + $1.n }
     u.today = m.values.reduce(0) { $0 + ($1.today ? $1.n : 0) }
+    u.cost = m.values.reduce(0) { $0 + $1.cost }
+    u.todayCost = m.values.reduce(0) { $0 + ($1.today ? $1.cost : 0) }
     msgs[path] = m
     usage[path] = u
   }
@@ -189,6 +231,22 @@ final class Store: ObservableObject {
   @Published var burn: [String: Int] = [:]
   private var tokenSamples: [String: [(t: Date, n: Int)]] = [:]
   private var heavyWarned = Set<String>()
+  @Published var query = ""
+  @Published var focusSearch = false
+  var searching = false
+  @Published var collapsed = Set(prefs.stringArray(forKey: "collapsed") ?? []) {
+    didSet { prefs.set(Array(collapsed), forKey: "collapsed") }
+  }
+  /// Handed-off sessions: old id → the session that continued it ("" until it starts).
+  @Published var retired = prefs.dictionary(forKey: "retired") as? [String: String] ?? [:] {
+    didSet { prefs.set(retired, forKey: "retired") }
+  }
+  @Published var recent: [String] = []
+  @Published var devices: [Device] = []
+  private var pendingHandoff: (old: String, cwd: String, at: Date)?
+  private var prepared: [String: (file: URL, at: Date)] = [:]
+  private var reminded: [String: Date] = [:]
+  private var lastDeviceSync = Date.distantPast
   var onLimits: (() -> Void)?
   var hoveredToast: UUID?
   var hitRects: [CGRect] = []
@@ -219,13 +277,34 @@ final class Store: ObservableObject {
   var quiet: Bool { dnd || (inMeeting && prefs.bool(forKey: "meetingQuiet")) }
   var sorted: [Session] {
     let list = sessions.values.filter { $0.phase != .ready || usage($0).tokens > 0 }
-    let byPhase = { (a: Session, b: Session) in (a.phase.rawValue, b.since) < (b.phase.rawValue, a.since) }
+    let rankOf = { (s: Session) in self.retired[s.id] != nil ? 9 : s.phase.rawValue }
+    let byPhase = { (a: Session, b: Session) in (rankOf(a), b.since) < (rankOf(b), a.since) }
     guard prefs.bool(forKey: "groupByWorkspace") else { return list.sorted(by: byPhase) }
     // Workspaces ordered by their most urgent session, sessions by phase inside each.
-    let rank = Dictionary(grouping: list, by: \.cwd).mapValues { $0.map(\.phase.rawValue).min() ?? 9 }
+    let rank = Dictionary(grouping: list, by: \.cwd).mapValues { $0.map(rankOf).min() ?? 9 }
     return list.sorted { a, b in a.cwd == b.cwd ? byPhase(a, b) : (rank[a.cwd]!, a.cwd) < (rank[b.cwd]!, b.cwd) }
   }
-  var urgent: Phase? { sorted.first?.phase }
+  var urgent: Phase? { sorted.first { retired[$0.id] == nil }?.phase }
+
+  /// Sessions matching the search box.
+  var filtered: [Session] {
+    let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+    guard !q.isEmpty else { return sorted }
+    return sorted.filter { s in
+      [s.name, s.folder, s.activity, usage(s).lastText].contains { $0.lowercased().contains(q) }
+    }
+  }
+  /// What the keyboard moves through: filtered, minus collapsed workspaces.
+  var visible: [Session] {
+    prefs.bool(forKey: "groupByWorkspace") && query.isEmpty ? filtered.filter { !collapsed.contains($0.cwd) } : filtered
+  }
+  var todayCost: Double { usage.values.reduce(0) { $0 + $1.todayCost } }
+
+  func toggleCollapse(_ key: String) {
+    withAnimation(Store.spring) { if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) } }
+  }
+  func successor(of id: String) -> Session? { retired[id].flatMap { sessions[$0] } }
+  func predecessor(of id: String) -> Session? { retired.first { $0.value == id }.flatMap { sessions[$0.key] } }
   var todayTokens: Int { usage.values.reduce(0) { $0 + $1.today } }
   /// The session's own transcript plus its subagents' transcripts.
   func usage(_ s: Session) -> Usage {
@@ -236,7 +315,7 @@ final class Store: ObservableObject {
 
   /// Why a session is expensive right now, or nil.
   func heavy(_ s: Session) -> String? {
-    guard s.phase != .ended else { return nil }
+    guard s.phase != .ended, retired[s.id] == nil else { return nil }
     let u = usage(s), b = burn[s.id] ?? 0
     if Double(b) >= prefs.double(forKey: "heavyBurn") { return "\(fmt(b)) tokens in the last 10 min" }
     if u.context >= 350_000 { return "context \(fmt(u.context)) is re-sent every turn" }
@@ -259,6 +338,7 @@ final class Store: ObservableObject {
     for s in sessions.values where s.phase != .permission {
       guard let why = heavy(s), heavyWarned.insert(s.id).inserted else { continue }
       alert(s, "Heavy: \(why)", sound: "Basso", pref: "notifyUsage", heavy: true)
+      prepareHandoff(s)
     }
     heavyWarned = heavyWarned.filter { id in sessions[id].map { heavy($0) != nil } ?? false }
   }
@@ -266,13 +346,16 @@ final class Store: ObservableObject {
   /// Claude's session registry: gives each live session its own name.
   private func readRegistry() {
     let dir = home.appendingPathComponent(".claude/sessions")
-    var names: [String: String] = [:], dirs: [String: String] = [:]
+    var names: [String: String] = [:], dirs: [String: String] = [:], seen: [String: Double] = [:]
     for f in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] where f.pathExtension == "json" {
       guard let d = try? Data(contentsOf: f), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
             let id = j["sessionId"] as? String, let n = j["name"] as? String else { continue }
       names[id] = n
       dirs[id] = j["cwd"] as? String
+      if let c = j["cwd"] as? String { seen[c] = max(seen[c] ?? 0, j["updatedAt"] as? Double ?? 0) }
     }
+    let r = Array(seen.sorted { $0.value > $1.value }.map(\.key).prefix(10))
+    if r != recent { recent = r }
     var ss = sessions
     for (id, s) in ss {
       if let n = names[id], n != s.title { ss[id]?.title = n }
@@ -324,15 +407,20 @@ final class Store: ObservableObject {
         var arr = (samples[k] ?? []).filter { Date().timeIntervalSince($0.t) < 3600 && $0.p <= p }
         arr.append((Date(), p))
         samples[k] = arr
-        var eta: TimeInterval?
-        if let first = arr.first, p > first.p {
-          let left = (100 - p) / ((p - first.p) / Date().timeIntervalSince(first.t))
-          if left < r.timeIntervalSinceNow { eta = left }
+        // Pace: recent samples when they span 5+ min, else the average since the window opened.
+        let start = r.addingTimeInterval(k == "five_hour" ? -5 * 3600 : -7 * 86400)
+        var rate: Double?
+        if let first = arr.first, p > first.p, Date().timeIntervalSince(first.t) >= 300 {
+          rate = (p - first.p) / Date().timeIntervalSince(first.t)
+        } else if p > 0, Date().timeIntervalSince(start) > 600 {
+          rate = p / Date().timeIntervalSince(start)
         }
+        var eta: TimeInterval?
+        if let rate, rate > 0, (100 - p) / rate < r.timeIntervalSinceNow { eta = (100 - p) / rate }
         for th in [80.0, 95.0] where p >= th && warned.insert("\(k)\(th)\(r.timeIntervalSince1970)").inserted {
           notice("\(label) usage at \(Int(p))%", eta.map { "At this pace you hit the limit in ~\(span($0))" } ?? "Resets in \(span(r.timeIntervalSinceNow))")
         }
-        return Limit(pct: p, resets: r, eta: eta)
+        return Limit(pct: p, resets: r, out: eta.map { Date().addingTimeInterval($0) }, paced: rate != nil)
       }
       let (f, w) = (lim("five_hour", "5-hour"), lim("seven_day", "Weekly"))
       if f != fiveHour { fiveHour = f }
@@ -347,6 +435,8 @@ final class Store: ObservableObject {
         if u != self.usage { self.usage = u }
         self.readRegistry()
         self.updateBurn()
+        self.remindIdle()
+        self.syncDevices()
       }
     }
   }
@@ -422,6 +512,12 @@ final class Store: ObservableObject {
     }
     let ts = (j["ts"] as? Double).map(Date.init(timeIntervalSince1970:)) ?? Date()
     let prev = ss[id]?.phase
+    if ss[id] == nil, let h = pendingHandoff, h.old != id, ts > h.at, ts.timeIntervalSince(h.at) < 900,
+       (j["c"] as? String ?? "").hasPrefix(h.cwd) {
+      retired[h.old] = id
+      pendingHandoff = nil
+      if prefs.bool(forKey: "autoEndOld"), let old = ss[h.old], old.pid > 1 { kill(old.pid, SIGTERM) }
+    }
     var s = ss[id] ?? Session(id: id, cwd: j["c"] as? String ?? "?", phase: next, since: ts)
     if let p = j["p"] as? Int, p > 1, s.pid != Int32(p) {
       s.pid = Int32(p)
@@ -524,7 +620,7 @@ final class Store: ObservableObject {
   // MARK: actions
 
   private func alert(_ s: Session, _ text: String, sound: String, pref: String, heavy: Bool = false) {
-    guard !quiet, prefs.bool(forKey: pref) else { return }  // muted: state still updates, the edge still glows
+    guard !quiet, prefs.bool(forKey: pref), retired[s.id] == nil else { return }  // muted: state still updates, the edge still glows
     if prefs.bool(forKey: "sounds") { NSSound(named: sound)?.play() }
     var t = toasts.filter { $0.session != s.id }
     t.append(Toast(session: s.id, text: text, heavy: heavy))
@@ -564,11 +660,8 @@ final class Store: ObservableObject {
   /// Starts a fresh session in the same workspace, seeded with a handoff note built from the old transcript
   /// (no tokens spent summarising). The old session stays open and reachable via Claude's SendMessage.
   func handoff(_ s: Session) {
-    let dir = hudDir.appendingPathComponent("handoff")
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    let stamp = ISO8601DateFormatter().string(from: Date()).prefix(16).replacingOccurrences(of: ":", with: "")
-    let file = dir.appendingPathComponent("\(s.name)-\(stamp).md")
-    try? handoffNote(s).write(to: file, atomically: true, encoding: .utf8)
+    let file: URL
+    if let p = prepared[s.id], Date().timeIntervalSince(p.at) < 900 { file = p.file } else { file = writeHandoff(s) }
     let prompt = """
       Continue the work of my previous Claude session "\(s.name)" (it got too expensive to keep going). \
       First read the handoff note at \(file.path) — it has the goal, my recent requests, the files touched and where it stopped. \
@@ -583,7 +676,90 @@ final class Store: ObservableObject {
     c.queryItems = [URLQueryItem(name: "prompt", value: prompt)]
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSWorkspace.shared.open(c.url!) }
     close()
-    withAnimation(Store.spring) { toasts.removeAll { $0.session == s.id } }
+    pendingHandoff = (s.id, s.cwd, Date())
+    withAnimation(Store.spring) {
+      retired[s.id] = ""
+      toasts.removeAll { $0.session == s.id }
+    }
+  }
+
+  @discardableResult
+  private func writeHandoff(_ s: Session) -> URL {
+    let dir = hudDir.appendingPathComponent("handoff")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let stamp = ISO8601DateFormatter().string(from: Date()).prefix(16).replacingOccurrences(of: ":", with: "")
+    let file = dir.appendingPathComponent("\(s.name)-\(stamp).md")
+    try? handoffNote(s).write(to: file, atomically: true, encoding: .utf8)
+    return file
+  }
+
+  /// Auto-handoff: write the note in the background as soon as a session turns heavy, so Fresh session is instant.
+  private func prepareHandoff(_ s: Session) {
+    queue.async {
+      let f = self.writeHandoff(s)
+      DispatchQueue.main.async { self.prepared[s.id] = (f, Date()) }
+    }
+  }
+
+  func undoHandoff(_ s: Session) { withAnimation(Store.spring) { retired[s.id] = nil } }
+
+  /// New session in a workspace (focuses its Cursor window), pre-filled with the default first prompt.
+  func launch(_ cwd: String) {
+    NSWorkspace.shared.open([URL(fileURLWithPath: cwd)],
+                            withApplicationAt: URL(fileURLWithPath: "/Applications/Cursor.app"),
+                            configuration: NSWorkspace.OpenConfiguration())
+    var c = URLComponents(string: "cursor://anthropic.claude-code/open")!
+    let first = prefs.string(forKey: "firstPrompt") ?? ""
+    if !first.isEmpty { c.queryItems = [URLQueryItem(name: "prompt", value: first)] }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSWorkspace.shared.open(c.url!) }
+    close()
+  }
+
+  /// One nudge per wait when a session has been waiting on you longer than the idle setting.
+  private func remindIdle() {
+    let mins = prefs.double(forKey: "idleMinutes")
+    guard mins > 0 else { return }
+    for s in sessions.values where (s.phase == .done || s.phase == .permission) && retired[s.id] == nil {
+      let waited = Date().timeIntervalSince(s.since)
+      guard waited > mins * 60, reminded[s.id] != s.since else { continue }
+      reminded[s.id] = s.since
+      alert(s, "Waiting on you for \(span(waited))", sound: "Tink", pref: s.phase == .done ? "notifyDone" : "notifyPermission")
+    }
+  }
+
+  /// Devices: every Mac running Claude HUD drops today's totals in iCloud Drive and reads the others'.
+  private func syncDevices() {
+    guard prefs.bool(forKey: "syncDevices") else { if !devices.isEmpty { devices = [] }; return }
+    guard Date().timeIntervalSince(lastDeviceSync) > 60 else { return }
+    lastDeviceSync = Date()
+    let myID: String = prefs.string(forKey: "deviceID") ?? {
+      let id = UUID().uuidString
+      prefs.set(id, forKey: "deviceID")
+      return id
+    }()
+    let day = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+    let mine: [String: Any] = ["name": Host.current().localizedName ?? "This Mac", "updated": Date().timeIntervalSince1970,
+                               "day": day, "tokens": todayTokens, "cost": todayCost,
+                               "live": sorted.filter { $0.phase != .ended && retired[$0.id] == nil }.count]
+    queue.async {
+      let fm = FileManager.default
+      try? fm.createDirectory(at: deviceDir, withIntermediateDirectories: true)
+      if let d = try? JSONSerialization.data(withJSONObject: mine) {
+        try? d.write(to: deviceDir.appendingPathComponent("\(myID).json"), options: .atomic)
+      }
+      var list: [Device] = []
+      for f in (try? fm.contentsOfDirectory(at: deviceDir, includingPropertiesForKeys: nil)) ?? [] where f.pathExtension == "json" {
+        guard let d = try? Data(contentsOf: f), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+        let id = f.deletingPathExtension().lastPathComponent
+        let today = (j["day"] as? Double) == day
+        list.append(Device(id: id, name: j["name"] as? String ?? "Mac",
+                           updated: Date(timeIntervalSince1970: j["updated"] as? Double ?? 0),
+                           tokens: today ? j["tokens"] as? Int ?? 0 : 0, cost: today ? j["cost"] as? Double ?? 0 : 0,
+                           live: j["live"] as? Int ?? 0, mine: id == myID))
+      }
+      list.sort { ($0.mine ? 0 : 1, -$0.cost) < ($1.mine ? 0 : 1, -$1.cost) }
+      DispatchQueue.main.async { if list != self.devices { self.devices = list } }
+    }
   }
 
   private func handoffNote(_ s: Session) -> String {
@@ -638,11 +814,12 @@ final class Store: ObservableObject {
 
   /// Keyboard control while the drawer is open. Returns true when the key was handled.
   func key(_ e: NSEvent) -> Bool {
-    guard drawerOpen, replyTarget == nil else { return false }
-    let list = sorted
+    guard drawerOpen, replyTarget == nil, !searching else { return false }
+    let list = visible
     let s = list.indices.contains(selected) ? list[selected] : nil
     switch (e.keyCode, e.charactersIgnoringModifiers ?? "") {
     case (53, _): close()
+    case (_, "/"): focusSearch = true
     case (125, _): withAnimation(.easeOut(duration: 0.15)) { selected = min(selected + 1, max(0, list.count - 1)) }
     case (126, _): withAnimation(.easeOut(duration: 0.15)) { selected = max(selected - 1, 0) }
     case (36, _): if let s { jump(s) }
@@ -909,7 +1086,7 @@ struct SessionCard: View {
         Spacer(minLength: 6)
         VStack(alignment: .trailing, spacing: 3) {
           Text(fmt(u.tokens)).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.85))
-            .help("Tokens this session (input + cache writes + output)")
+            .help("\(fmt(u.tokens)) tokens · \(money(u.cost)) at API prices (\(money(u.todayCost)) today)")
           ContextRing(tokens: u.context)
           if burn >= 50_000 {
             Text("+\(fmt(burn))/10m").font(.system(size: 9, weight: .semibold, design: .monospaced))
@@ -917,6 +1094,10 @@ struct SessionCard: View {
               .help("Tokens used in the last 10 minutes")
           }
         }
+      }
+      if let from = store.predecessor(of: s.id) {
+        Label("continues \(from.name)", systemImage: "arrow.turn.down.right")
+          .font(.system(size: 10, weight: .medium, design: .rounded)).foregroundStyle(Color(red: 0.75, green: 0.65, blue: 1))
       }
       if !s.agents.isEmpty {
         HStack(spacing: 6) {
@@ -1016,8 +1197,12 @@ struct LimitBar: View {
       }
       .frame(height: 5)
       Group {
-        if let eta = limit?.eta {
-          Text("limit in ~\(span(eta)) at this pace").foregroundStyle(Phase.permission.color.opacity(0.85))
+        if let l = limit, let out = l.out {
+          Text("out ≈ \(clock(out)) at this pace").foregroundStyle(Phase.permission.color.opacity(0.9))
+            .help("Resets \(clock(l.resets)) (in \(span(l.resets.timeIntervalSinceNow)))")
+        } else if let l = limit, l.paced {
+          Text("lasts until reset · \(clock(l.resets))").foregroundStyle(Phase.done.color.opacity(0.7))
+            .help("At your current pace you won't hit this limit before it resets")
         } else {
           Text(limit.map { "resets in \(span($0.resets.timeIntervalSinceNow))" } ?? "waiting for data").foregroundStyle(.white.opacity(0.35))
         }
@@ -1031,19 +1216,38 @@ struct WorkspaceHeader: View {
   @ObservedObject var store: Store
   let cwd: String
   let sessions: [Session]
+  @State private var hover = false
   var body: some View {
     let tokens = sessions.reduce(0) { $0 + store.usage($1).tokens }
+    let cost = sessions.reduce(0.0) { $0 + store.usage($1).todayCost }
+    let folded = store.collapsed.contains(cwd)
     HStack(spacing: 6) {
-      Image(systemName: "folder.fill").font(.system(size: 9)).foregroundStyle(.white.opacity(0.35))
+      Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(0.4))
+        .rotationEffect(.degrees(folded ? 0 : 90))
       Text((cwd as NSString).lastPathComponent.uppercased())
         .font(.system(size: 9.5, weight: .bold, design: .rounded)).tracking(1.3).foregroundStyle(.white.opacity(0.55))
         .lineLimit(1).fixedSize()
-      Text("\(sessions.count)").font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
+      if folded {
+        HStack(spacing: 3) { ForEach(sessions) { Circle().fill($0.phase.color).frame(width: 5, height: 5) } }
+      } else {
+        Text("\(sessions.count)").font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
+      }
       Rectangle().fill(.white.opacity(0.08)).frame(height: 1)
-      Text(fmt(tokens)).font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+      if hover {
+        Button { store.launch(cwd) } label: {
+          Image(systemName: "plus").font(.system(size: 8.5, weight: .bold)).foregroundStyle(.white.opacity(0.7))
+            .frame(width: 16, height: 16).background(Circle().fill(.white.opacity(0.1)))
+        }
+        .buttonStyle(Press()).help("New session in \((cwd as NSString).lastPathComponent)")
+      }
+      Text("\(money(cost)) · \(fmt(tokens))").font(.system(size: 9.5, weight: .semibold, design: .monospaced))
         .foregroundStyle(sessions.contains { store.heavy($0) != nil } ? red : .white.opacity(0.4))
+        .help("Today at API prices · tokens across these sessions")
     }
-    .padding(.horizontal, 4)
+    .padding(.horizontal, 4).padding(.vertical, 2)
+    .contentShape(Rectangle())
+    .onTapGesture { store.toggleCollapse(cwd) }
+    .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hover = h } }
     .help(cwd)
   }
 }
@@ -1052,14 +1256,29 @@ struct Drawer: View {
   @ObservedObject var store: Store
   @AppStorage("theme") private var theme = "aurora"
   @AppStorage("groupByWorkspace") private var groupByWorkspace = true
+  @AppStorage("idleMinutes") private var idleMinutes = 10.0
+  @AppStorage("firstPrompt") private var firstPrompt = ""
+  @AppStorage("autoEndOld") private var autoEndOld = false
+  @AppStorage("syncDevices") private var syncDevices = true
   var body: some View {
-    let list = store.sorted
+    let list = store.filtered
+    let vis = store.visible
     VStack(alignment: .leading, spacing: 16) {
       HStack(alignment: .center, spacing: 8) {
         StatusDot(phase: store.urgent ?? .ready)
         Text("CLAUDE").font(.system(size: 11, weight: .heavy, design: .rounded)).tracking(3).foregroundStyle(.white.opacity(0.75))
         Text("\(list.filter { $0.phase != .ended }.count) live")
           .font(.system(size: 10.5, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.4))
+        Menu {
+          Section("New session in…") {
+            ForEach(store.recent, id: \.self) { c in Button((c as NSString).lastPathComponent) { store.launch(c) } }
+          }
+        } label: {
+          Image(systemName: "plus").font(.system(size: 10.5, weight: .bold)).foregroundStyle(.white.opacity(0.5))
+            .frame(width: 22, height: 22).background(Circle().fill(.white.opacity(0.06)))
+        }
+        .menuStyle(.button).buttonStyle(Press()).menuIndicator(.hidden).fixedSize()
+        .help("New session")
         Button { SettingsWindow.show(store) } label: {
           Image(systemName: "gearshape.fill").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.white.opacity(0.35))
             .frame(width: 22, height: 22).background(Circle().fill(.white.opacity(0.04)))
@@ -1077,9 +1296,10 @@ struct Drawer: View {
         .help(store.inMeeting ? "Quiet: you're in a Zoom meeting" : store.dnd ? "Do not disturb is on" : "Do not disturb")
         Spacer()
         VStack(alignment: .trailing, spacing: 1) {
-          Text(fmt(store.todayTokens)).font(.system(size: 16, weight: .semibold, design: .monospaced))
+          Text(money(store.todayCost)).font(.system(size: 16, weight: .semibold, design: .monospaced))
             .contentTransition(.numericText())
-          Text("tokens today").font(.system(size: 9, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.4))
+            .help("Today's usage priced at API rates (your plan isn't billed this way)")
+          Text("\(fmt(store.todayTokens)) tokens today").font(.system(size: 9, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.4))
         }
       }
       .contextMenu {
@@ -1092,23 +1312,34 @@ struct Drawer: View {
         LimitBar(title: "WEEKLY", limit: store.week)
       }
 
+      if !store.devices.isEmpty { DevicesStrip(store: store) }
+
       Rectangle().fill(LinearGradient(colors: [.clear, .white.opacity(0.12), .clear], startPoint: .leading, endPoint: .trailing))
         .frame(height: 1)
 
+      if store.pinned || !store.query.isEmpty { SearchField(store: store) }
+
       if list.isEmpty {
         VStack(spacing: 6) {
-          Image(systemName: "sparkles").font(.system(size: 18)).foregroundStyle(.white.opacity(0.3))
-          Text("No sessions yet").font(.system(size: 12, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.4))
+          Image(systemName: store.query.isEmpty ? "sparkles" : "magnifyingglass").font(.system(size: 18)).foregroundStyle(.white.opacity(0.3))
+          Text(store.query.isEmpty ? "No sessions yet" : "No session matches “\(store.query)”")
+            .font(.system(size: 12, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.4))
         }
         .frame(maxWidth: .infinity).padding(.vertical, 18)
       } else {
-        let grouped = groupByWorkspace && Set(list.map(\.cwd)).count > 1
+        let grouped = groupByWorkspace && store.query.isEmpty && Set(list.map(\.cwd)).count > 1
+        let folders = list.map(\.cwd).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
         let cards = VStack(spacing: 8) {
-          ForEach(Array(list.enumerated()), id: \.element.id) { i, s in
-            if grouped && (i == 0 || list[i - 1].cwd != s.cwd) {
-              WorkspaceHeader(store: store, cwd: s.cwd, sessions: list.filter { $0.cwd == s.cwd }).padding(.top, i == 0 ? 0 : 6)
+          if grouped {
+            ForEach(folders, id: \.self) { c in
+              let group = list.filter { $0.cwd == c }
+              WorkspaceHeader(store: store, cwd: c, sessions: group).padding(.top, c == folders.first ? 0 : 6)
+              if !store.collapsed.contains(c) {
+                ForEach(group) { s in card(s, vis) }
+              }
             }
-            SessionCard(store: store, s: s, index: i, selected: store.pinned && i == store.selected)
+          } else {
+            ForEach(list) { s in card(s, vis) }
           }
         }
         ViewThatFits(in: .vertical) {
@@ -1117,13 +1348,13 @@ struct Drawer: View {
             ScrollView(showsIndicators: false) { cards }
               .defaultScrollAnchor(.top)
               .onChange(of: store.selected) { _, i in
-                if list.indices.contains(i) { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(list[i].id, anchor: .center) } }
+                if vis.indices.contains(i) { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(vis[i].id, anchor: .center) } }
               }
           }
         }
       }
       if store.pinned {
-        Text("↑↓  ↩ open  A allow  W always  D deny  R reply")
+        Text("↑↓  ↩ open  A allow  D deny  R reply  / search")
           .font(.system(size: 9.5, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
           .frame(maxWidth: .infinity)
       }
@@ -1132,6 +1363,111 @@ struct Drawer: View {
     .frame(width: 340)
     .glass(24, tint: store.urgent == .permission ? Phase.permission.color : (Theme(rawValue: theme) ?? .aurora).colors[1])
     .hitArea()
+  }
+
+  @ViewBuilder func card(_ s: Session, _ vis: [Session]) -> some View {
+    if store.retired[s.id] != nil {
+      RetiredCard(store: store, s: s)
+    } else {
+      let i = vis.firstIndex { $0.id == s.id } ?? 0
+      SessionCard(store: store, s: s, index: i, selected: store.pinned && vis.indices.contains(store.selected) && vis[store.selected].id == s.id)
+    }
+  }
+}
+
+/// A session that was handed off to a fresh one: clearly retired, one tap to close it.
+struct RetiredCard: View {
+  @ObservedObject var store: Store
+  let s: Session
+  @State private var hover = false
+  var body: some View {
+    let next = store.successor(of: s.id)
+    let violet = Color(red: 0.75, green: 0.65, blue: 1)
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 10) {
+        Image(systemName: "archivebox.fill").font(.system(size: 11)).foregroundStyle(violet.opacity(0.8)).frame(width: 18)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(s.name).font(.system(size: 13, weight: .semibold, design: .rounded)).strikethrough(color: .white.opacity(0.4))
+            .foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+          Text(next.map { "Handed off → \($0.name)" } ?? "Handed off · waiting for the new session")
+            .font(.system(size: 10.5, weight: .medium, design: .rounded)).foregroundStyle(violet)
+        }
+        Spacer()
+        Text(fmt(store.usage(s).tokens)).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.35))
+      }
+      if hover {
+        HStack(spacing: 6) {
+          if let next { Pill(title: "Go to new", icon: "arrow.up.right", tint: violet) { store.jump(next) } }
+          Pill(title: "Undo", icon: "arrow.uturn.backward") { store.undoHandoff(s) }
+          Spacer()
+          if s.phase != .ended { Pill(title: "Close old", icon: "power", tint: red, primary: true) { store.end(s) } }
+        }
+        .transition(.opacity)
+      }
+    }
+    .padding(12)
+    .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(violet.opacity(hover ? 0.08 : 0.04)))
+    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(violet.opacity(0.18), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+    .contentShape(RoundedRectangle(cornerRadius: 16))
+    .onHover { h in withAnimation(.easeOut(duration: 0.18)) { hover = h } }
+    .help("This session was continued in a fresh one — you don't need it anymore")
+  }
+}
+
+struct SearchField: View {
+  @ObservedObject var store: Store
+  @FocusState private var focused: Bool
+  var body: some View {
+    HStack(spacing: 7) {
+      Image(systemName: "magnifyingglass").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+      TextField("Search sessions  ( / )", text: $store.query)
+        .textFieldStyle(.plain).font(.system(size: 12, design: .rounded))
+        .focused($focused)
+        .onSubmit { if let s = store.visible.first { store.jump(s) } }
+        .onExitCommand { store.query = ""; focused = false }
+      if !store.query.isEmpty {
+        Button { store.query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.35)) }
+          .buttonStyle(.plain).accessibilityLabel("Clear search")
+      }
+    }
+    .padding(.horizontal, 10).padding(.vertical, 7)
+    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.black.opacity(0.35)))
+    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.white.opacity(focused ? 0.25 : 0.06)))
+    .onChange(of: store.focusSearch) { _, v in if v { hudPanel?.makeKey(); focused = true; store.focusSearch = false } }
+    .onChange(of: focused) { _, v in store.searching = v }
+  }
+}
+
+struct DevicesStrip: View {
+  @ObservedObject var store: Store
+  var body: some View {
+    let folded = store.collapsed.contains("#devices")
+    VStack(alignment: .leading, spacing: 7) {
+      HStack(spacing: 6) {
+        Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(0.4))
+          .rotationEffect(.degrees(folded ? 0 : 90))
+        Text("DEVICES").font(.system(size: 9.5, weight: .bold, design: .rounded)).tracking(1.4).foregroundStyle(.white.opacity(0.45))
+        Text("\(store.devices.count)").font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
+        Spacer()
+        Text(money(store.devices.reduce(0) { $0 + $1.cost }) + " today").font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+          .foregroundStyle(.white.opacity(0.4))
+      }
+      .contentShape(Rectangle())
+      .onTapGesture { store.toggleCollapse("#devices") }
+      if !folded {
+        ForEach(store.devices) { d in
+          HStack(spacing: 8) {
+            Image(systemName: "laptopcomputer").font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
+            Circle().fill(d.online ? Phase.done.color : Color(white: 0.4)).frame(width: 5, height: 5)
+            Text(d.name + (d.mine ? "  · this Mac" : "")).font(.system(size: 11, weight: .medium, design: .rounded)).lineLimit(1)
+            if d.live > 0 { Text("\(d.live) live").font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.35)) }
+            Spacer()
+            Text("\(money(d.cost)) · \(fmt(d.tokens))").font(.system(size: 10, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.6))
+          }
+          .help(d.online ? "Online" : "Last seen \(clock(d.updated))")
+        }
+      }
+    }
   }
 }
 
@@ -1340,6 +1676,10 @@ struct SettingsView: View {
   @AppStorage("loginItem") private var loginItem = true
   @AppStorage("heavyBurn") private var heavyBurn = 1_000_000.0
   @AppStorage("groupByWorkspace") private var groupByWorkspace = true
+  @AppStorage("idleMinutes") private var idleMinutes = 10.0
+  @AppStorage("firstPrompt") private var firstPrompt = ""
+  @AppStorage("autoEndOld") private var autoEndOld = false
+  @AppStorage("syncDevices") private var syncDevices = true
 
   var body: some View {
     Form {
@@ -1368,6 +1708,12 @@ struct SettingsView: View {
         LabeledContent("Keep toasts for") {
           HStack { Slider(value: $toastSeconds, in: 4...30, step: 1); Text("\(Int(toastSeconds))s").font(.caption.monospacedDigit()).frame(width: 30) }
         }
+        LabeledContent("Remind me when a session waits") {
+          HStack {
+            Slider(value: $idleMinutes, in: 0...60, step: 5)
+            Text(idleMinutes == 0 ? "Off" : "\(Int(idleMinutes)) min").font(.caption.monospacedDigit()).frame(width: 46)
+          }
+        }
         Toggle("Do not disturb", isOn: $store.dnd)
         Toggle("Quiet during Zoom meetings", isOn: $meetingQuiet)
       }
@@ -1387,11 +1733,19 @@ struct SettingsView: View {
           }
         }
         Toggle("Group sessions by workspace", isOn: $groupByWorkspace)
+        Toggle("Close the old session when its fresh one starts", isOn: $autoEndOld)
       } header: { Text("Optimization") } footer: {
         Text("Heavy sessions turn red (also at 350k+ context or 3+ parallel agents) with Compact and Fresh session actions.")
           .font(.caption).foregroundStyle(.secondary)
       }
+      Section {
+        Toggle("Share usage across my Macs (iCloud Drive)", isOn: $syncDevices)
+      } header: { Text("Devices") } footer: {
+        Text("Each Mac running Claude HUD writes today's tokens and cost to iCloud Drive › Claude HUD. Claude.ai web and mobile can't be split out — the limit bars include everything.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
       Section("General") {
+        TextField("First prompt for new sessions", text: $firstPrompt, prompt: Text("optional — pre-filled when you press +"))
         Picker("Open drawer shortcut", selection: $hotkey) {
           ForEach(hotkeys.indices, id: \.self) { Text(hotkeys[$0].name).tag($0) }
           Text("Off").tag(hotkeys.count)
@@ -1550,7 +1904,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
       withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { store.drawerOpen = true }
     }
     guard store.drawerOpen, !store.pinned else { return }
-    if overUI || atEdge || store.replyTarget != nil { leftSince = nil; return }
+    if overUI || atEdge || store.replyTarget != nil || store.searching { leftSince = nil; return }
     leftSince = leftSince ?? Date()
     if Date().timeIntervalSince(leftSince!) > 0.4 { store.close() }
   }
