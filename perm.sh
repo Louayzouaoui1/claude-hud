@@ -3,6 +3,7 @@
 # dialog in Cursor) if the HUD isn't running, the user picks "In Cursor", or ~10 min pass.
 D="$HOME/.claude/hud"
 pgrep -qx ClaudeHUD || exit 0
+[ -f "$D/answer-off" ] && exit 0
 id=$(uuidgen)
 mkdir -p "$D/req" "$D/ans"
 jq -c --argjson pid "${CLAUDE_PID:-0}" '. + {pid: $pid}' > "$D/req/$id.tmp" && mv "$D/req/$id.tmp" "$D/req/$id.json"

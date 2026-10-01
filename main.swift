@@ -15,6 +15,35 @@ let projectsDir = home.appendingPathComponent(".claude/projects")
 let columnWidth: CGFloat = 400
 var hudPanel: NSPanel?
 var hotKeyAction: (() -> Void)?
+var hotKeyRef: EventHotKeyRef?
+
+let prefs: UserDefaults = {
+  let d = UserDefaults.standard
+  d.register(defaults: ["theme": "aurora", "glass": 0.85, "edgeGlow": true, "edgeDelay": 0.12,
+                        "notifyPermission": true, "notifyDone": true, "notifyEnded": true, "notifyUsage": true,
+                        "sounds": true, "toastSeconds": 9.0, "meetingQuiet": true, "answerInHUD": true,
+                        "hotkey": 0, "menuBar": true, "loginItem": true,
+                        "heavyBurn": 1_000_000.0, "groupByWorkspace": true])
+  return d
+}()
+
+enum Theme: String, CaseIterable, Identifiable {
+  case aurora, nebula, ember, mono
+  var id: String { rawValue }
+  var colors: [Color] {
+    switch self {
+    case .aurora: [Color(red: 0.4, green: 0.95, blue: 0.95), Color(red: 0.45, green: 0.72, blue: 1)]
+    case .nebula: [Color(red: 0.86, green: 0.6, blue: 1), Color(red: 1, green: 0.45, blue: 0.78)]
+    case .ember: [Color(red: 1, green: 0.84, blue: 0.45), Color(red: 1, green: 0.5, blue: 0.32)]
+    case .mono: [Color(white: 0.96), Color(white: 0.62)]
+    }
+  }
+}
+
+let hotkeys: [(name: String, code: Int, mods: Int)] = [
+  ("⌥ Space", kVK_Space, optionKey), ("⌃⌥ Space", kVK_Space, controlKey | optionKey),
+  ("⌘⇧ Space", kVK_Space, cmdKey | shiftKey), ("⌥ C", kVK_ANSI_C, optionKey),
+]
 
 // MARK: - Model
 
@@ -49,7 +78,10 @@ struct Session: Identifiable, Equatable {
   var transcript = ""
   var activity = ""
   var request: Request?
-  var name: String { (cwd as NSString).lastPathComponent }
+  var title = ""                     // Claude's own session name (from ~/.claude/sessions), e.g. "blaze-app-a8"
+  var agents: [String: String] = [:]  // running subagents: id → type
+  var folder: String { (cwd as NSString).lastPathComponent }
+  var name: String { title.isEmpty ? folder : title }
 }
 
 struct Usage: Equatable { var tokens = 0, today = 0, context = 0, lastText = "" }
@@ -60,6 +92,7 @@ struct Toast: Identifiable, Equatable {
   let session: String  // "" = a usage notice
   let text: String
   var title = ""
+  var heavy = false
   let created = Date()
 }
 
@@ -153,6 +186,9 @@ final class Store: ObservableObject {
   @Published var week: Limit?
   @Published var dnd = UserDefaults.standard.bool(forKey: "dnd") { didSet { UserDefaults.standard.set(dnd, forKey: "dnd") } }
   @Published var inMeeting = false
+  @Published var burn: [String: Int] = [:]
+  private var tokenSamples: [String: [(t: Date, n: Int)]] = [:]
+  private var heavyWarned = Set<String>()
   var onLimits: (() -> Void)?
   var hoveredToast: UUID?
   var hitRects: [CGRect] = []
@@ -180,14 +216,69 @@ final class Store: ObservableObject {
     Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in self?.fetchLimits() }
   }
 
-  var quiet: Bool { dnd || inMeeting }
+  var quiet: Bool { dnd || (inMeeting && prefs.bool(forKey: "meetingQuiet")) }
   var sorted: [Session] {
-    sessions.values.filter { $0.phase != .ready || usage($0).tokens > 0 }.sorted { ($0.phase.rawValue, $1.since) < ($1.phase.rawValue, $0.since) }
+    let list = sessions.values.filter { $0.phase != .ready || usage($0).tokens > 0 }
+    let byPhase = { (a: Session, b: Session) in (a.phase.rawValue, b.since) < (b.phase.rawValue, a.since) }
+    guard prefs.bool(forKey: "groupByWorkspace") else { return list.sorted(by: byPhase) }
+    // Workspaces ordered by their most urgent session, sessions by phase inside each.
+    let rank = Dictionary(grouping: list, by: \.cwd).mapValues { $0.map(\.phase.rawValue).min() ?? 9 }
+    return list.sorted { a, b in a.cwd == b.cwd ? byPhase(a, b) : (rank[a.cwd]!, a.cwd) < (rank[b.cwd]!, b.cwd) }
   }
   var urgent: Phase? { sorted.first?.phase }
   var todayTokens: Int { usage.values.reduce(0) { $0 + $1.today } }
+  /// The session's own transcript plus its subagents' transcripts.
   func usage(_ s: Session) -> Usage {
-    usage[s.transcript] ?? usage.first { $0.key.hasSuffix("/\(s.id).jsonl") }?.value ?? Usage()
+    var u = usage[s.transcript] ?? usage.first { $0.key.hasSuffix("/\(s.id).jsonl") }?.value ?? Usage()
+    for (k, v) in usage where k.contains("/\(s.id)/subagents/") { u.tokens += v.tokens; u.today += v.today }
+    return u
+  }
+
+  /// Why a session is expensive right now, or nil.
+  func heavy(_ s: Session) -> String? {
+    guard s.phase != .ended else { return nil }
+    let u = usage(s), b = burn[s.id] ?? 0
+    if Double(b) >= prefs.double(forKey: "heavyBurn") { return "\(fmt(b)) tokens in the last 10 min" }
+    if u.context >= 350_000 { return "context \(fmt(u.context)) is re-sent every turn" }
+    if s.agents.count >= 3 { return "\(s.agents.count) agents running at once" }
+    return nil
+  }
+
+  /// Token growth per session over the last 10 minutes; warns once when a session turns heavy.
+  private func updateBurn() {
+    let now = Date()
+    var b: [String: Int] = [:]
+    for s in sessions.values {
+      let n = usage(s).tokens
+      var arr = (tokenSamples[s.id] ?? []).filter { now.timeIntervalSince($0.t) < 600 }
+      arr.append((now, n))
+      tokenSamples[s.id] = arr
+      b[s.id] = max(0, n - arr[0].n)
+    }
+    if b != burn { burn = b }
+    for s in sessions.values where s.phase != .permission {
+      guard let why = heavy(s), heavyWarned.insert(s.id).inserted else { continue }
+      alert(s, "Heavy: \(why)", sound: "Basso", pref: "notifyUsage", heavy: true)
+    }
+    heavyWarned = heavyWarned.filter { id in sessions[id].map { heavy($0) != nil } ?? false }
+  }
+
+  /// Claude's session registry: gives each live session its own name.
+  private func readRegistry() {
+    let dir = home.appendingPathComponent(".claude/sessions")
+    var names: [String: String] = [:], dirs: [String: String] = [:]
+    for f in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] where f.pathExtension == "json" {
+      guard let d = try? Data(contentsOf: f), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+            let id = j["sessionId"] as? String, let n = j["name"] as? String else { continue }
+      names[id] = n
+      dirs[id] = j["cwd"] as? String
+    }
+    var ss = sessions
+    for (id, s) in ss {
+      if let n = names[id], n != s.title { ss[id]?.title = n }
+      if let c = dirs[id], c != s.cwd { ss[id]?.cwd = c }
+    }
+    if ss != sessions { sessions = ss }
   }
 
   /// Runs ~3×/s. Only publishes when something actually changed, so SwiftUI stays idle otherwise.
@@ -213,7 +304,7 @@ final class Store: ObservableObject {
       if t.id == hoveredToast { return true }
       if t.session.isEmpty { return now.timeIntervalSince(t.created) < 12 }
       guard let s = ss[t.session] else { return false }
-      return s.phase == .permission || replyTarget == t.session || now.timeIntervalSince(t.created) < 9
+      return s.phase == .permission || replyTarget == t.session || now.timeIntervalSince(t.created) < prefs.double(forKey: "toastSeconds")
     }
     if kept != toasts { withAnimation(Store.spring) { toasts = kept } }
   }
@@ -252,7 +343,11 @@ final class Store: ObservableObject {
     if meeting != inMeeting { inMeeting = meeting }
     queue.async { [counter] in
       let u = counter.scan()
-      DispatchQueue.main.async { if u != self.usage { self.usage = u } }
+      DispatchQueue.main.async {
+        if u != self.usage { self.usage = u }
+        self.readRegistry()
+        self.updateBurn()
+      }
     }
   }
 
@@ -308,6 +403,12 @@ final class Store: ObservableObject {
 
   private func apply(_ j: [String: Any], _ ss: inout [String: Session], alert doAlert: Bool) {
     guard let id = j["s"] as? String, let ev = j["e"] as? String else { return }
+    if ev == "SubagentStart" || ev == "SubagentStop" {
+      guard var s = ss[id], let aid = j["ai"] as? String else { return }
+      s.agents[aid] = ev == "SubagentStart" ? (j["at"] as? String ?? "agent") : nil
+      ss[id] = s
+      return
+    }
     let type = j["t"] as? String ?? "", msg = j["m"] as? String ?? ""
     let next: Phase
     switch ev {
@@ -333,15 +434,16 @@ final class Store: ObservableObject {
     } else if next == .done || next == .ended || ev == "UserPromptSubmit" {
       s.activity = ""
     }
+    if next == .ended { s.agents = [:] }
     let keep = (prev == .working && next == .working) || (s.request != nil && (next == .working || next == .permission))
     if !keep { s.phase = next; s.since = ts }
     ss[id] = s
     guard doAlert, !keep, prev != next else { return }
     switch next {
     case .permission where Date().timeIntervalSince(passthrough[id] ?? .distantPast) > 120:
-      self.alert(s, msg.isEmpty ? "Needs your attention" : msg, sound: "Glass")
-    case .done: self.alert(s, "", sound: "Hero")
-    case .ended: self.alert(s, "Session ended", sound: "Pop")
+      self.alert(s, msg.isEmpty ? "Needs your attention" : msg, sound: "Glass", pref: "notifyPermission")
+    case .done: self.alert(s, "", sound: "Hero", pref: "notifyDone")
+    case .ended: self.alert(s, "Session ended", sound: "Pop", pref: "notifyEnded")
     default: break
     }
   }
@@ -389,7 +491,7 @@ final class Store: ObservableObject {
       if s.pid < 2 { s.pid = pid; s.cwd = processCwd(pid) ?? s.cwd }
       if s.transcript.isEmpty { s.transcript = j["transcript_path"] as? String ?? "" }
       ss[sid] = s
-      alert(s, "", sound: "Glass")
+      alert(s, "", sound: "Glass", pref: "notifyPermission")
     }
     for (id, s) in ss where s.request.map({ !live.contains($0.id) }) ?? false {
       ss[id]?.request = nil
@@ -421,18 +523,18 @@ final class Store: ObservableObject {
 
   // MARK: actions
 
-  private func alert(_ s: Session, _ text: String, sound: String) {
-    guard !quiet else { return }  // do-not-disturb: state still updates, the edge still glows
-    NSSound(named: sound)?.play()
+  private func alert(_ s: Session, _ text: String, sound: String, pref: String, heavy: Bool = false) {
+    guard !quiet, prefs.bool(forKey: pref) else { return }  // muted: state still updates, the edge still glows
+    if prefs.bool(forKey: "sounds") { NSSound(named: sound)?.play() }
     var t = toasts.filter { $0.session != s.id }
-    t.append(Toast(session: s.id, text: text))
+    t.append(Toast(session: s.id, text: text, heavy: heavy))
     if t.count > 4, let i = t.firstIndex(where: { sessions[$0.session]?.phase != .permission }) { t.remove(at: i) }
     withAnimation(Store.spring) { toasts = t }
   }
 
   private func notice(_ title: String, _ text: String) {
-    guard !quiet else { return }
-    NSSound(named: "Submarine")?.play()
+    guard !quiet, prefs.bool(forKey: "notifyUsage") else { return }
+    if prefs.bool(forKey: "sounds") { NSSound(named: "Submarine")?.play() }
     withAnimation(Store.spring) { toasts.append(Toast(session: "", text: text, title: title)) }
   }
 
@@ -457,6 +559,73 @@ final class Store: ObservableObject {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSWorkspace.shared.open(c.url!) }
     close()
     withAnimation(Store.spring) { toasts.removeAll { $0.session == s.id } }
+  }
+
+  /// Starts a fresh session in the same workspace, seeded with a handoff note built from the old transcript
+  /// (no tokens spent summarising). The old session stays open and reachable via Claude's SendMessage.
+  func handoff(_ s: Session) {
+    let dir = hudDir.appendingPathComponent("handoff")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let stamp = ISO8601DateFormatter().string(from: Date()).prefix(16).replacingOccurrences(of: ":", with: "")
+    let file = dir.appendingPathComponent("\(s.name)-\(stamp).md")
+    try? handoffNote(s).write(to: file, atomically: true, encoding: .utf8)
+    let prompt = """
+      Continue the work of my previous Claude session "\(s.name)" (it got too expensive to keep going). \
+      First read the handoff note at \(file.path) — it has the goal, my recent requests, the files touched and where it stopped. \
+      Open only the files you actually need; don't re-explore the codebase. \
+      Only if something essential is missing from the note, ask the old session with SendMessage \
+      (it's "\(s.name)" in ListAgents) — keep that rare, every message wakes its large context.
+      """
+    NSWorkspace.shared.open([URL(fileURLWithPath: s.cwd)],
+                            withApplicationAt: URL(fileURLWithPath: "/Applications/Cursor.app"),
+                            configuration: NSWorkspace.OpenConfiguration())
+    var c = URLComponents(string: "cursor://anthropic.claude-code/open")!
+    c.queryItems = [URLQueryItem(name: "prompt", value: prompt)]
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSWorkspace.shared.open(c.url!) }
+    close()
+    withAnimation(Store.spring) { toasts.removeAll { $0.session == s.id } }
+  }
+
+  private func handoffNote(_ s: Session) -> String {
+    var prompts: [String] = [], files: [String] = [], last = "", branch = ""
+    let path = s.transcript.isEmpty ? "" : s.transcript
+    for line in ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n") {
+      guard let j = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+            let m = j["message"] as? [String: Any] else { continue }
+      if let b = j["gitBranch"] as? String, !b.isEmpty { branch = b }
+      let parts = m["content"] as? [[String: Any]] ?? []
+      if j["type"] as? String == "user", j["isMeta"] as? Bool != true {
+        let text = (m["content"] as? String) ?? parts.first { $0["type"] as? String == "text" }?["text"] as? String ?? ""
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty, !t.hasPrefix("<") { prompts.append(t) }
+      } else if j["type"] as? String == "assistant" {
+        for p in parts {
+          if p["type"] as? String == "text", let t = p["text"] as? String { last = t }
+          if p["type"] as? String == "tool_use", ["Edit", "Write", "MultiEdit", "NotebookEdit"].contains(p["name"] as? String ?? ""),
+             let f = (p["input"] as? [String: Any])?["file_path"] as? String, !files.contains(f) { files.append(f) }
+        }
+      }
+    }
+    let cut = { (t: String, n: Int) in t.count > n ? String(t.prefix(n)) + "…" : t }
+    return """
+      # Handoff from "\(s.name)"
+
+      - Workspace: \(s.cwd)
+      - Branch: \(branch.isEmpty ? "unknown" : branch)
+      - Previous session: \(s.id) (still open as "\(s.name)")
+
+      ## Original request
+      \(cut(prompts.first ?? "(none found)", 1500))
+
+      ## Recent requests (oldest first)
+      \(prompts.suffix(6).map { "- " + cut($0.replacingOccurrences(of: "\n", with: " "), 400) }.joined(separator: "\n"))
+
+      ## Files touched
+      \(files.isEmpty ? "(none)" : files.suffix(40).map { "- " + $0 }.joined(separator: "\n"))
+
+      ## Where it stopped (last reply)
+      \(cut(last, 3000))
+      """
   }
 
   func end(_ s: Session) {
@@ -500,13 +669,19 @@ extension View {
     background(GeometryReader { Color.clear.preference(key: HitKey.self, value: [$0.frame(in: .global)]) })
   }
 
-  func glass(_ r: CGFloat, tint: Color) -> some View {
+  func glass(_ r: CGFloat, tint: Color) -> some View { modifier(Glass(r: r, tint: tint)) }
+}
+
+struct Glass: ViewModifier {
+  let r: CGFloat, tint: Color
+  @AppStorage("glass") private var dark = 0.85
+  func body(content: Content) -> some View {
     let shape = RoundedRectangle(cornerRadius: r, style: .continuous)
-    return background {
+    return content.background {
       ZStack {
         shape.fill(.black.opacity(0.3)).shadow(color: .black.opacity(0.5), radius: 24, y: 12)
         shape.fill(.ultraThinMaterial)
-        shape.fill(LinearGradient(colors: [Color(white: 0.09).opacity(0.78), Color(white: 0.02).opacity(0.9)],
+        shape.fill(LinearGradient(colors: [Color(white: 0.09).opacity(dark * 0.92), Color(white: 0.02).opacity(min(1, dark * 1.06))],
                                   startPoint: .top, endPoint: .bottom))
         shape.fill(RadialGradient(colors: [tint.opacity(0.22), .clear], center: .topLeading, startRadius: 0, endRadius: 280))
       }
@@ -717,6 +892,8 @@ struct SessionCard: View {
     let u = store.usage(s)
     let replying = store.replyTarget == s.id
     let lit = hover || selected
+    let heavy = store.heavy(s)
+    let burn = store.burn[s.id] ?? 0
     VStack(alignment: .leading, spacing: 9) {
       HStack(spacing: 10) {
         StatusDot(phase: s.phase)
@@ -734,7 +911,36 @@ struct SessionCard: View {
           Text(fmt(u.tokens)).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.85))
             .help("Tokens this session (input + cache writes + output)")
           ContextRing(tokens: u.context)
+          if burn >= 50_000 {
+            Text("+\(fmt(burn))/10m").font(.system(size: 9, weight: .semibold, design: .monospaced))
+              .foregroundStyle(heavy != nil ? red : .white.opacity(0.35))
+              .help("Tokens used in the last 10 minutes")
+          }
         }
+      }
+      if !s.agents.isEmpty {
+        HStack(spacing: 6) {
+          Image(systemName: "person.2.wave.2.fill").font(.system(size: 9.5)).foregroundStyle(Theme.aurora.colors[0])
+          Text("\(s.agents.count) agent\(s.agents.count == 1 ? "" : "s") · \(Set(s.agents.values).sorted().joined(separator: ", "))")
+            .font(.system(size: 10.5, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+        }
+      }
+      if let heavy {
+        VStack(alignment: .leading, spacing: 7) {
+          HStack(spacing: 6) {
+            Image(systemName: "flame.fill").foregroundStyle(red)
+            Text(heavy).foregroundStyle(red)
+          }
+          .font(.system(size: 11, weight: .semibold, design: .rounded))
+          HStack(spacing: 6) {
+            Pill(title: "Compact", icon: "arrow.down.right.and.arrow.up.left", tint: red) { store.jump(s, prompt: "/compact") }
+              .help("Open the tab with /compact ready to send")
+            Pill(title: "Fresh session", icon: "arrow.triangle.branch", tint: red, primary: true) { store.handoff(s) }
+              .help("New tab in this workspace, seeded with a handoff note from this one")
+          }
+        }
+        .padding(9)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(red.opacity(0.08)))
       }
       if s.phase == .working, !s.activity.isEmpty {
         HStack(spacing: 6) {
@@ -774,7 +980,8 @@ struct SessionCard: View {
     .padding(12)
     .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white.opacity(lit ? 0.075 : 0.04)))
     .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-      .strokeBorder(s.phase.color.opacity(s.phase == .permission ? 0.5 : selected ? 0.45 : hover ? 0.22 : 0.07)))
+      .strokeBorder(heavy != nil && s.phase != .permission ? red.opacity(0.55)
+                    : s.phase.color.opacity(s.phase == .permission ? 0.5 : selected ? 0.45 : hover ? 0.22 : 0.07)))
     .contentShape(RoundedRectangle(cornerRadius: 16))
     .onHover { h in withAnimation(.easeOut(duration: 0.18)) { hover = h } }
     .onTapGesture { store.jump(s) }
@@ -787,11 +994,12 @@ struct SessionCard: View {
 struct LimitBar: View {
   let title: String
   let limit: Limit?
+  @AppStorage("theme") private var theme = "aurora"
   var body: some View {
     let pct = min(100, limit?.pct ?? 0)
     let colors: [Color] = pct > 85 ? [Color(red: 1, green: 0.4, blue: 0.5), Color(red: 1, green: 0.25, blue: 0.4)]
       : pct > 60 ? [Color(red: 1, green: 0.8, blue: 0.35), Phase.permission.color]
-      : [Color(red: 0.4, green: 0.95, blue: 0.95), Phase.working.color]
+      : (Theme(rawValue: theme) ?? .aurora).colors
     VStack(alignment: .leading, spacing: 6) {
       HStack(alignment: .firstTextBaseline) {
         Text(title).font(.system(size: 9.5, weight: .bold, design: .rounded)).tracking(1.4).foregroundStyle(.white.opacity(0.45))
@@ -819,8 +1027,31 @@ struct LimitBar: View {
   }
 }
 
+struct WorkspaceHeader: View {
+  @ObservedObject var store: Store
+  let cwd: String
+  let sessions: [Session]
+  var body: some View {
+    let tokens = sessions.reduce(0) { $0 + store.usage($1).tokens }
+    HStack(spacing: 6) {
+      Image(systemName: "folder.fill").font(.system(size: 9)).foregroundStyle(.white.opacity(0.35))
+      Text((cwd as NSString).lastPathComponent.uppercased())
+        .font(.system(size: 9.5, weight: .bold, design: .rounded)).tracking(1.3).foregroundStyle(.white.opacity(0.55))
+        .lineLimit(1).fixedSize()
+      Text("\(sessions.count)").font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
+      Rectangle().fill(.white.opacity(0.08)).frame(height: 1)
+      Text(fmt(tokens)).font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+        .foregroundStyle(sessions.contains { store.heavy($0) != nil } ? red : .white.opacity(0.4))
+    }
+    .padding(.horizontal, 4)
+    .help(cwd)
+  }
+}
+
 struct Drawer: View {
   @ObservedObject var store: Store
+  @AppStorage("theme") private var theme = "aurora"
+  @AppStorage("groupByWorkspace") private var groupByWorkspace = true
   var body: some View {
     let list = store.sorted
     VStack(alignment: .leading, spacing: 16) {
@@ -829,6 +1060,12 @@ struct Drawer: View {
         Text("CLAUDE").font(.system(size: 11, weight: .heavy, design: .rounded)).tracking(3).foregroundStyle(.white.opacity(0.75))
         Text("\(list.filter { $0.phase != .ended }.count) live")
           .font(.system(size: 10.5, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.4))
+        Button { SettingsWindow.show(store) } label: {
+          Image(systemName: "gearshape.fill").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.white.opacity(0.35))
+            .frame(width: 22, height: 22).background(Circle().fill(.white.opacity(0.04)))
+        }
+        .buttonStyle(Press())
+        .help("Settings")
         Button { store.dnd.toggle() } label: {
           Image(systemName: store.quiet ? "moon.fill" : "moon")
             .font(.system(size: 11, weight: .semibold))
@@ -845,7 +1082,10 @@ struct Drawer: View {
           Text("tokens today").font(.system(size: 9, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.4))
         }
       }
-      .contextMenu { Button("Quit Claude HUD") { NSApp.terminate(nil) } }
+      .contextMenu {
+        Button("Settings…") { SettingsWindow.show(store) }
+        Button("Quit Claude HUD") { NSApp.terminate(nil) }
+      }
 
       HStack(spacing: 16) {
         LimitBar(title: "5-HOUR", limit: store.fiveHour)
@@ -862,8 +1102,12 @@ struct Drawer: View {
         }
         .frame(maxWidth: .infinity).padding(.vertical, 18)
       } else {
+        let grouped = groupByWorkspace && Set(list.map(\.cwd)).count > 1
         let cards = VStack(spacing: 8) {
           ForEach(Array(list.enumerated()), id: \.element.id) { i, s in
+            if grouped && (i == 0 || list[i - 1].cwd != s.cwd) {
+              WorkspaceHeader(store: store, cwd: s.cwd, sessions: list.filter { $0.cwd == s.cwd }).padding(.top, i == 0 ? 0 : 6)
+            }
             SessionCard(store: store, s: s, index: i, selected: store.pinned && i == store.selected)
           }
         }
@@ -871,6 +1115,7 @@ struct Drawer: View {
           cards
           ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) { cards }
+              .defaultScrollAnchor(.top)
               .onChange(of: store.selected) { _, i in
                 if list.indices.contains(i) { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(list[i].id, anchor: .center) } }
               }
@@ -885,7 +1130,7 @@ struct Drawer: View {
     }
     .padding(16)
     .frame(width: 340)
-    .glass(24, tint: (store.urgent ?? .working).color)
+    .glass(24, tint: store.urgent == .permission ? Phase.permission.color : (Theme(rawValue: theme) ?? .aurora).colors[1])
     .hitArea()
   }
 }
@@ -920,10 +1165,15 @@ struct ToastCard: View {
           ReplyField(store: store, s: s)
         } else if s.phase != .ended {
           HStack(spacing: 6) {
-            Pill(title: "Reply", icon: "arrowshape.turn.up.left.fill", tint: Phase.done.color, primary: s.phase == .done) {
-              withAnimation(Store.spring) { store.replyTarget = s.id }
+            if t.heavy {
+              Pill(title: "Fresh session", icon: "arrow.triangle.branch", tint: red, primary: true) { store.handoff(s) }
+              Pill(title: "Compact", icon: "arrow.down.right.and.arrow.up.left", tint: red) { store.jump(s, prompt: "/compact") }
+            } else {
+              Pill(title: "Reply", icon: "arrowshape.turn.up.left.fill", tint: Phase.done.color, primary: s.phase == .done) {
+                withAnimation(Store.spring) { store.replyTarget = s.id }
+              }
+              Pill(title: "Open", icon: "arrow.up.right") { store.jump(s) }
             }
-            Pill(title: "Open", icon: "arrow.up.right") { store.jump(s) }
           }
         }
       }
@@ -1001,12 +1251,13 @@ struct EdgeHandle: View {
 
 struct Root: View {
   @ObservedObject var store: Store
+  @AppStorage("edgeGlow") private var edgeGlow = true
   var body: some View {
     ZStack(alignment: .trailing) {
       Color.clear
       if store.drawerOpen {
         Drawer(store: store).padding(.trailing, 12).padding(.vertical, 18).transition(.edge)
-      } else {
+      } else if edgeGlow || store.urgent == .permission {
         EdgeHandle(phase: store.urgent).padding(.trailing, 1).transition(.opacity)
       }
     }
@@ -1027,6 +1278,138 @@ struct Root: View {
     .onPreferenceChange(HitKey.self) { store.hitRects = $0 }
     .environment(\.colorScheme, .dark)
     .foregroundStyle(.white)
+  }
+}
+
+// MARK: - Settings
+
+enum SettingsWindow {
+  static var window: NSWindow?
+  static func show(_ store: Store) {
+    store.close()
+    if window == nil {
+      let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 660),
+                       styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+      w.title = "Claude HUD"
+      w.titlebarAppearsTransparent = true
+      w.appearance = NSAppearance(named: .darkAqua)
+      w.isReleasedWhenClosed = false
+      w.contentView = NSHostingView(rootView: SettingsView(store: store))
+      w.center()
+      window = w
+    }
+    NSApp.activate(ignoringOtherApps: true)
+    window?.makeKeyAndOrderFront(nil)
+  }
+}
+
+struct Swatch: View {
+  let theme: Theme
+  let on: Bool
+  let action: () -> Void
+  var body: some View {
+    Button(action: action) {
+      VStack(spacing: 5) {
+        Circle().fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+          .frame(width: 24, height: 24)
+          .overlay(Circle().strokeBorder(Color.white.opacity(on ? 0.9 : 0), lineWidth: 2).padding(-4))
+        Text(theme.rawValue.capitalized).font(.caption2).foregroundStyle(on ? Color.primary : Color.secondary)
+      }
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(theme.rawValue) theme")
+  }
+}
+
+struct SettingsView: View {
+  @ObservedObject var store: Store
+  @AppStorage("theme") private var theme = "aurora"
+  @AppStorage("glass") private var glass = 0.85
+  @AppStorage("edgeGlow") private var edgeGlow = true
+  @AppStorage("edgeDelay") private var edgeDelay = 0.12
+  @AppStorage("notifyPermission") private var notifyPermission = true
+  @AppStorage("notifyDone") private var notifyDone = true
+  @AppStorage("notifyEnded") private var notifyEnded = true
+  @AppStorage("notifyUsage") private var notifyUsage = true
+  @AppStorage("sounds") private var sounds = true
+  @AppStorage("toastSeconds") private var toastSeconds = 9.0
+  @AppStorage("meetingQuiet") private var meetingQuiet = true
+  @AppStorage("answerInHUD") private var answerInHUD = true
+  @AppStorage("hotkey") private var hotkey = 0
+  @AppStorage("menuBar") private var menuBar = true
+  @AppStorage("loginItem") private var loginItem = true
+  @AppStorage("heavyBurn") private var heavyBurn = 1_000_000.0
+  @AppStorage("groupByWorkspace") private var groupByWorkspace = true
+
+  var body: some View {
+    Form {
+      Section("Appearance") {
+        LabeledContent("Theme") {
+          HStack(spacing: 14) {
+            ForEach(Theme.allCases) { t in
+              Swatch(theme: t, on: theme == t.rawValue) { withAnimation(.easeOut(duration: 0.2)) { theme = t.rawValue } }
+            }
+          }
+        }
+        LabeledContent("Glass") {
+          HStack { Text("Clear").font(.caption); Slider(value: $glass, in: 0.5...1); Text("Dark").font(.caption) }
+        }
+        Toggle("Glow on the screen edge", isOn: $edgeGlow)
+        LabeledContent("Edge hover delay") {
+          HStack { Slider(value: $edgeDelay, in: 0...0.6); Text("\(Int(edgeDelay * 1000)) ms").font(.caption.monospacedDigit()).frame(width: 46) }
+        }
+      }
+      Section("Notifications") {
+        Toggle("Needs permission or input", isOn: $notifyPermission)
+        Toggle("Finished — your turn", isOn: $notifyDone)
+        Toggle("Session ended", isOn: $notifyEnded)
+        Toggle("Usage alerts at 80% and 95%", isOn: $notifyUsage)
+        Toggle("Sounds", isOn: $sounds)
+        LabeledContent("Keep toasts for") {
+          HStack { Slider(value: $toastSeconds, in: 4...30, step: 1); Text("\(Int(toastSeconds))s").font(.caption.monospacedDigit()).frame(width: 30) }
+        }
+        Toggle("Do not disturb", isOn: $store.dnd)
+        Toggle("Quiet during Zoom meetings", isOn: $meetingQuiet)
+      }
+      Section {
+        Toggle("Answer permission prompts from the HUD", isOn: $answerInHUD)
+      } header: { Text("Permissions") } footer: {
+        Text(answerInHUD
+             ? "Prompts go to the HUD first; Cursor shows its dialog once you pick “Cursor”."
+             : "Prompts appear in Cursor as usual; the HUD only notifies you.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+      Section {
+        LabeledContent("Flag a session as heavy at") {
+          HStack {
+            Slider(value: $heavyBurn, in: 250_000...5_000_000, step: 250_000)
+            Text("\(fmt(Int(heavyBurn)))/10m").font(.caption.monospacedDigit()).frame(width: 64)
+          }
+        }
+        Toggle("Group sessions by workspace", isOn: $groupByWorkspace)
+      } header: { Text("Optimization") } footer: {
+        Text("Heavy sessions turn red (also at 350k+ context or 3+ parallel agents) with Compact and Fresh session actions.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+      Section("General") {
+        Picker("Open drawer shortcut", selection: $hotkey) {
+          ForEach(hotkeys.indices, id: \.self) { Text(hotkeys[$0].name).tag($0) }
+          Text("Off").tag(hotkeys.count)
+        }
+        Toggle("Show usage in the menu bar", isOn: $menuBar)
+        Toggle("Launch at login", isOn: $loginItem)
+      }
+      Section {
+        HStack {
+          Button("Quit Claude HUD", role: .destructive) { NSApp.terminate(nil) }
+          Spacer()
+          Text("Right-click the menu bar item for quick actions").font(.caption).foregroundStyle(.secondary)
+        }
+      }
+    }
+    .formStyle(.grouped)
+    .frame(width: 480, height: 660)
+    .tint((Theme(rawValue: theme) ?? .aurora).colors[1])
   }
 }
 
@@ -1065,24 +1448,68 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // Keyboard: ⌥Space toggles the drawer; arrows/letters drive it while it's open.
     hotKeyAction = { [weak self] in self?.toggle() }
-    registerHotKey()
+    var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+    InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in hotKeyAction?(); return noErr }, 1, &spec, nil, nil)
     NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in self?.store.key(e) == true ? nil : e }
 
     // Menu bar: live 5-hour · weekly usage; click toggles the drawer.
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     statusItem.button?.target = self
-    statusItem.button?.action = #selector(toggle)
+    statusItem.button?.action = #selector(statusClicked)
+    statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
     store.onLimits = { [weak self] in self?.updateStatus() }
     updateStatus()
+
+    applyPrefs()
+    NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+      self?.applyPrefs()
+    }
   }
 
-  func registerHotKey() {
-    var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-    InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in hotKeyAction?(); return noErr }, 1, &spec, nil, nil)
-    var ref: EventHotKeyRef?
-    RegisterEventHotKey(UInt32(kVK_Space), UInt32(optionKey), EventHotKeyID(signature: 0x4855_4421, id: 1),
-                        GetApplicationEventTarget(), 0, &ref)
+  private var applied: [String: Int] = [:]
+
+  /// Applies settings that live outside SwiftUI. Only acts on values that changed.
+  func applyPrefs() {
+    func changed(_ k: String, _ v: Int) -> Bool { defer { applied[k] = v }; return applied[k] != v }
+    let hk = prefs.integer(forKey: "hotkey")
+    if changed("hotkey", hk) {
+      if let r = hotKeyRef { UnregisterEventHotKey(r); hotKeyRef = nil }
+      if hotkeys.indices.contains(hk) {
+        RegisterEventHotKey(UInt32(hotkeys[hk].code), UInt32(hotkeys[hk].mods), EventHotKeyID(signature: 0x4855_4421, id: 1),
+                            GetApplicationEventTarget(), 0, &hotKeyRef)
+      }
+    }
+    statusItem.isVisible = prefs.bool(forKey: "menuBar")
+    let off = hudDir.appendingPathComponent("answer-off")  // perm.sh steps aside when this exists
+    if prefs.bool(forKey: "answerInHUD") { try? FileManager.default.removeItem(at: off) }
+    else { FileManager.default.createFile(atPath: off.path, contents: nil) }
+    let login = prefs.bool(forKey: "loginItem") ? 1 : 0
+    if changed("loginItem", login), applied.count > 1 || login == 0 {
+      let app = Bundle.main.bundlePath
+      let script = login == 1
+        ? "tell application \"System Events\" to if not (exists login item \"ClaudeHUD\") then make login item at end with properties {path:\"\(app)\", hidden:true}"
+        : "tell application \"System Events\" to delete (every login item whose name is \"ClaudeHUD\")"
+      let p = Process()
+      p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+      p.arguments = ["-e", script]
+      try? p.run()
+    }
   }
+
+  @objc func statusClicked() {
+    guard NSApp.currentEvent?.type == .rightMouseUp else { return toggle() }
+    let m = NSMenu()
+    m.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
+    m.addItem(withTitle: store.dnd ? "Turn off Do Not Disturb" : "Do Not Disturb", action: #selector(toggleDND), keyEquivalent: "").target = self
+    m.addItem(.separator())
+    m.addItem(withTitle: "Quit Claude HUD", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    statusItem.menu = m
+    statusItem.button?.performClick(nil)
+    statusItem.menu = nil
+  }
+
+  @objc func openSettings() { SettingsWindow.show(store) }
+  @objc func toggleDND() { store.dnd.toggle() }
 
   @objc func toggle() {
     if store.drawerOpen { return store.close() }
@@ -1101,7 +1528,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
       string: " \(f) · \(w)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)])
     statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Claude usage")
     statusItem.button?.imagePosition = .imageLeading
-    statusItem.button?.toolTip = "Claude usage — 5-hour · weekly (⌥Space opens the drawer)"
+    statusItem.button?.toolTip = "Claude usage — 5-hour · weekly. Click: drawer · right-click: menu"
   }
 
   func place() {
@@ -1119,7 +1546,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     let atEdge = m.x >= screen.frame.maxX - 2 && f.minY...f.maxY ~= m.y
     edgeSince = atEdge ? (edgeSince ?? Date()) : nil
-    if !store.drawerOpen, let t = edgeSince, Date().timeIntervalSince(t) > 0.12 {
+    if !store.drawerOpen, let t = edgeSince, Date().timeIntervalSince(t) > prefs.double(forKey: "edgeDelay") {
       withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { store.drawerOpen = true }
     }
     guard store.drawerOpen, !store.pinned else { return }
