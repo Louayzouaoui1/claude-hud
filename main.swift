@@ -1229,14 +1229,12 @@ struct LimitBar: View {
       }
       .frame(height: 5)
       Group {
+        Text(limit.map { "resets in \(span($0.resets.timeIntervalSinceNow)) · \(clock($0.resets))" } ?? "waiting for data")
+          .foregroundStyle(.white.opacity(0.4))
         if let l = limit, let out = l.out {
           Text("out ≈ \(clock(out)) at this pace").foregroundStyle(Phase.permission.color.opacity(0.9))
-            .help("Resets \(clock(l.resets)) (in \(span(l.resets.timeIntervalSinceNow)))")
         } else if let l = limit, l.paced {
-          Text("lasts until reset · \(clock(l.resets))").foregroundStyle(Phase.done.color.opacity(0.7))
-            .help("At your current pace you won't hit this limit before it resets")
-        } else {
-          Text(limit.map { "resets in \(span($0.resets.timeIntervalSinceNow))" } ?? "waiting for data").foregroundStyle(.white.opacity(0.35))
+          Text("lasts until reset at this pace").foregroundStyle(Phase.done.color.opacity(0.7))
         }
       }
       .font(.system(size: 9.5, weight: .medium, design: .rounded))
