@@ -93,6 +93,11 @@ struct Device: Identifiable, Equatable {
   var online: Bool { Date().timeIntervalSince(updated) < 180 }
 }
 
+/// A Claude Code session on your account that lives elsewhere (remote control from another machine, or claude.ai/code).
+struct Remote: Identifiable, Equatable {
+  let id: String, title: String, connected: Bool, working: Bool, model: String, branch: String, last: Date
+}
+
 let deviceDir = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Claude HUD/devices")
 
 /// Title of Cursor's focused window, when Cursor is frontmost (needs Accessibility).
@@ -254,6 +259,10 @@ final class Store: ObservableObject {
   }
   @Published var recent: [String] = []
   @Published var devices: [Device] = []
+  @Published var remote: [Remote] = []
+  /// Share of the current 5-hour window that grew while this Mac used nothing: claude.ai, phone, other computers.
+  @Published var elsewhere = 0.0
+  private var lastPace: (p: Double, local: Int, resets: Date)?
   private var pendingHandoff: (old: String, cwd: String, at: Date)?
   private var prepared: [String: (file: URL, at: Date)] = [:]
   private var reminded: [String: Date] = [:]
@@ -434,6 +443,20 @@ final class Store: ObservableObject {
         return Limit(pct: p, resets: r, out: eta.map { Date().addingTimeInterval($0) }, paced: rate != nil)
       }
       let (f, w) = (lim("five_hour", "5-hour"), lim("seven_day", "Weekly"))
+      if let f {
+        let local = todayTokens
+        if let prev = lastPace, f.resets == prev.resets {
+          if f.pct - prev.p >= 0.5, local - prev.local < 20_000 {
+            elsewhere += f.pct - prev.p
+            if elsewhere >= 3, warned.insert("elsewhere\(f.resets.timeIntervalSince1970)").inserted {
+              notice("Claude is being used elsewhere", "+\(Int(elsewhere))% of your 5-hour window came from claude.ai, a phone or another computer while this Mac was idle")
+            }
+          }
+        } else if lastPace != nil {
+          elsewhere = 0  // new window
+        }
+        lastPace = (f.pct, local, f.resets)
+      }
       if f != fiveHour { fiveHour = f }
       if w != week { week = w }
       onLimits?()
@@ -466,6 +489,7 @@ final class Store: ObservableObject {
       p.waitUntilExit()
       guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let token = (j["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String else { return }
+      self.fetchRemote(token)
       var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!, timeoutInterval: 10)
       req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
       req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
@@ -484,6 +508,33 @@ final class Store: ObservableObject {
         }
       }.resume()
     }
+  }
+
+  /// Claude Code sessions on the account that run elsewhere (remote control, claude.ai/code), active in the last 2 days.
+  private func fetchRemote(_ token: String) {
+    var req = URLRequest(url: URL(string: "https://api.anthropic.com/v1/code/sessions")!, timeoutInterval: 10)
+    req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+    req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+    URLSession.shared.dataTask(with: req) { d, r, _ in
+      guard (r as? HTTPURLResponse)?.statusCode == 200, let d,
+            let rows = (try? JSONSerialization.jsonObject(with: d) as? [String: Any])?["data"] as? [[String: Any]] else { return }
+      let iso = ISO8601DateFormatter()
+      iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+      let list: [Remote] = rows.compactMap { x in
+        guard let id = x["id"] as? String, x["status"] as? String == "active",
+              let last = (x["last_event_at"] as? String).flatMap(iso.date(from:)), Date().timeIntervalSince(last) < 2 * 86400
+        else { return nil }
+        let meta = x["external_metadata"] as? [String: Any] ?? [:]
+        let branches = (meta["current_branches"] as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: String] }
+        return Remote(id: id, title: x["title"] as? String ?? "Session",
+                      connected: x["connection_status"] as? String == "connected",
+                      working: x["worker_status"] as? String == "running" || x["worker_status"] as? String == "busy",
+                      model: (meta["model"] as? String ?? "").replacingOccurrences(of: "claude-", with: ""),
+                      branch: branches?.first.map { "\(($0.key as NSString).lastPathComponent) · \($0.value)" } ?? "", last: last)
+      }
+      DispatchQueue.main.async { if list != self.remote { self.remote = list } }
+    }.resume()
   }
 
   // MARK: events.jsonl
@@ -1344,7 +1395,7 @@ struct Drawer: View {
         LimitBar(title: "WEEKLY", limit: store.week)
       }
 
-      if !store.devices.isEmpty { DevicesStrip(store: store) }
+      if !store.devices.isEmpty || !store.remote.isEmpty || store.elsewhere > 0 { DevicesStrip(store: store) }
 
       Rectangle().fill(LinearGradient(colors: [.clear, .white.opacity(0.12), .clear], startPoint: .leading, endPoint: .trailing))
         .frame(height: 1)
@@ -1479,7 +1530,8 @@ struct DevicesStrip: View {
         Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(0.4))
           .rotationEffect(.degrees(folded ? 0 : 90))
         Text("DEVICES").font(.system(size: 9.5, weight: .bold, design: .rounded)).tracking(1.4).foregroundStyle(.white.opacity(0.45))
-        Text("\(store.devices.count)").font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
+        Text("\(store.devices.count + store.remote.count + (store.elsewhere > 0 ? 1 : 0))")
+          .font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
         Spacer()
         Text(money(store.devices.reduce(0) { $0 + $1.cost }) + " today").font(.system(size: 9.5, weight: .semibold, design: .monospaced))
           .foregroundStyle(.white.opacity(0.4))
@@ -1497,6 +1549,30 @@ struct DevicesStrip: View {
             Text("\(money(d.cost)) · \(fmt(d.tokens))").font(.system(size: 10, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.6))
           }
           .help(d.online ? "Online" : "Last seen \(clock(d.updated))")
+        }
+        if store.elsewhere > 0 {
+          HStack(spacing: 8) {
+            Image(systemName: "globe").font(.system(size: 10)).foregroundStyle(Phase.permission.color)
+            Circle().fill(Phase.permission.color).frame(width: 5, height: 5)
+            Text("Elsewhere · claude.ai, phone, other computers").font(.system(size: 11, weight: .medium, design: .rounded)).lineLimit(1)
+            Spacer()
+            Text("+\(Int(store.elsewhere.rounded()))% of 5h").font(.system(size: 10, weight: .semibold, design: .monospaced))
+              .foregroundStyle(Phase.permission.color)
+          }
+          .help("Your account's 5-hour usage grew this much while this Mac wasn't using Claude")
+        }
+        ForEach(store.remote) { r in
+          HStack(spacing: 8) {
+            Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.5))
+            Circle().fill(r.working ? Phase.working.color : r.connected ? Phase.done.color : Color(white: 0.4)).frame(width: 5, height: 5)
+            Text(r.title).font(.system(size: 11, weight: .medium, design: .rounded)).lineLimit(1)
+            Spacer()
+            Text(r.connected ? (r.working ? "working" : "connected") : "last \(clock(r.last))")
+              .font(.system(size: 9.5, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.4)).fixedSize()
+          }
+          .contentShape(Rectangle())
+          .onTapGesture { NSWorkspace.shared.open(URL(string: "https://claude.ai/code/\(r.id)")!) }
+          .help("Remote / cloud session · \(r.model)\(r.branch.isEmpty ? "" : " · " + r.branch) — click to open on claude.ai")
         }
       }
     }
@@ -1785,7 +1861,7 @@ struct SettingsView: View {
       Section {
         Toggle("Share usage across my Macs (iCloud Drive)", isOn: $syncDevices)
       } header: { Text("Devices") } footer: {
-        Text("Each Mac running Claude HUD writes today's tokens and cost to iCloud Drive › Claude HUD. Claude.ai web and mobile can't be split out — the limit bars include everything.")
+        Text("Each Mac running Claude HUD writes today's tokens and cost to iCloud Drive › Claude HUD. Remote-control and claude.ai/code sessions on your account are listed too, and usage that grows while this Mac is idle shows as “Elsewhere”. Anthropic doesn't expose a list of signed-in devices.")
           .font(.caption).foregroundStyle(.secondary)
       }
       Section("General") {
