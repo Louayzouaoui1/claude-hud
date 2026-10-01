@@ -158,6 +158,42 @@ final class Store: ObservableObject {
       withAnimation(Store.spring) { self?.tick() }
     }
     Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refreshUsage() }
+    fetchLimits()
+    Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in self?.fetchLimits() }
+  }
+
+  /// 5-hour / weekly usage from the endpoint `/usage` uses, signed in with Claude Code's own login
+  /// (read via /usr/bin/security, which already has Keychain access). Saved in the statusline's format.
+  private func fetchLimits() {
+    queue.async {
+      let p = Process(), out = Pipe()
+      p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+      p.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+      p.standardOutput = out
+      p.standardError = FileHandle.nullDevice
+      guard (try? p.run()) != nil else { return }
+      let data = out.fileHandleForReading.readDataToEndOfFile()
+      p.waitUntilExit()
+      guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let token = (j["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String else { return }
+      var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!, timeoutInterval: 10)
+      req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+      URLSession.shared.dataTask(with: req) { d, r, _ in
+        guard (r as? HTTPURLResponse)?.statusCode == 200, let d,
+              let u = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+        var limits: [String: Any] = [:]
+        for k in ["five_hour", "seven_day"] {
+          guard let o = u[k] as? [String: Any], let pct = o["utilization"] as? Double, let r = o["resets_at"] as? String,
+                let date = ISO8601DateFormatter().date(from: r.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression))
+          else { continue }
+          limits[k] = ["used_percentage": pct, "resets_at": date.timeIntervalSince1970]
+        }
+        if !limits.isEmpty, let out = try? JSONSerialization.data(withJSONObject: limits) {
+          try? out.write(to: limitsURL, options: .atomic)
+        }
+      }.resume()
+    }
   }
 
   var sorted: [Session] {
