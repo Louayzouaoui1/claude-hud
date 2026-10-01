@@ -19,16 +19,16 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </dict></plist>
 EOF
 codesign -s - -f "$APP" >/dev/null 2>&1 || true
-cp perm.sh statusline.sh "$D/"
+cp event.sh perm.sh statusline.sh "$D/"
 
 # Hooks: drop any previous Claude HUD entries, then add the current ones. Other hooks are untouched.
-EV="jq -c --argjson p \$PPID '{s:.session_id,e:.hook_event_name,c:.cwd,t:.notification_type,m:.message,tp:.transcript_path,ts:now,p:\$p}' >> ~/.claude/hud/events.jsonl"
+EV='CLAUDE_PID=$PPID ~/.claude/hud/event.sh'
 PERM='CLAUDE_PID=$PPID ~/.claude/hud/perm.sh'
 S=~/.claude/settings.json
 cp "$S" "$S.bak-claudehud"
 jq --arg ev "$EV" --arg perm "$PERM" '
   .hooks |= with_entries(.value |= map(select(all(.hooks[]?; (.command // "") | contains("claude/hud/") | not))))
-  | reduce ("SessionStart","UserPromptSubmit","PostToolUse","Notification","Stop","SessionEnd") as $e (.;
+  | reduce ("SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","Notification","Stop","SessionEnd") as $e (.;
       .hooks[$e] += [{hooks: [{type: "command", command: $ev}]}])
   | .hooks.PermissionRequest += [{hooks: [{type: "command", command: $perm, timeout: 600}]}]
   | if .statusLine then . else .statusLine = {type: "command", command: "~/.claude/hud/statusline.sh"} end
