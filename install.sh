@@ -28,7 +28,7 @@ S=~/.claude/settings.json
 cp "$S" "$S.bak-claudehud"
 jq --arg ev "$EV" --arg perm "$PERM" '
   .hooks |= with_entries(.value |= map(select(all(.hooks[]?; (.command // "") | contains("claude/hud/") | not))))
-  | reduce ("SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","Notification","Stop","SessionEnd") as $e (.;
+  | reduce ("SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","Notification","Stop","SessionEnd","SubagentStart","SubagentStop") as $e (.;
       .hooks[$e] += [{hooks: [{type: "command", command: $ev}]}])
   | .hooks.PermissionRequest += [{hooks: [{type: "command", command: $perm, timeout: 600}]}]
   | if .statusLine then . else .statusLine = {type: "command", command: "~/.claude/hud/statusline.sh"} end
