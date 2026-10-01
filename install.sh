@@ -18,7 +18,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>LSUIElement</key><true/>
 </dict></plist>
 EOF
-codesign -s - -f "$APP" >/dev/null 2>&1 || true
+# Stable signature so macOS keeps the Accessibility grant across rebuilds (ad-hoc as a fallback).
+codesign -s "Apple Development: Louay zouaoui (T9953ZUB26)" -f "$APP" >/dev/null 2>&1 || codesign -s - -f "$APP" >/dev/null 2>&1 || true
 cp event.sh perm.sh statusline.sh "$D/"
 
 # Hooks: drop any previous Claude HUD entries, then add the current ones. Other hooks are untouched.

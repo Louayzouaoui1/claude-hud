@@ -24,7 +24,7 @@ let prefs: UserDefaults = {
                         "sounds": true, "toastSeconds": 9.0, "meetingQuiet": true, "answerInHUD": true,
                         "hotkey": 0, "menuBar": true, "loginItem": true,
                         "heavyBurn": 1_000_000.0, "groupByWorkspace": true,
-                        "idleMinutes": 10.0, "firstPrompt": "", "autoEndOld": false, "syncDevices": true])
+                        "idleMinutes": 10.0, "firstPrompt": "", "autoEndOld": true, "autoSend": true, "syncDevices": true])
   return d
 }()
 
@@ -94,6 +94,17 @@ struct Device: Identifiable, Equatable {
 }
 
 let deviceDir = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Claude HUD/devices")
+
+/// Title of Cursor's focused window, when Cursor is frontmost (needs Accessibility).
+func cursorWindowTitle() -> String? {
+  guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication,
+        app.bundleIdentifier == "com.todesktop.230313mzl4w4u92" else { return nil }
+  var win: CFTypeRef?, title: CFTypeRef?
+  let ax = AXUIElementCreateApplication(app.processIdentifier)
+  guard AXUIElementCopyAttributeValue(ax, kAXFocusedWindowAttribute as CFString, &win) == .success, let win else { return nil }
+  AXUIElementCopyAttributeValue(win as! AXUIElement, kAXTitleAttribute as CFString, &title)
+  return title as? String
+}
 
 /// "15:42" today, "Sat 14:00" later.
 func clock(_ d: Date) -> String {
@@ -516,7 +527,6 @@ final class Store: ObservableObject {
        (j["c"] as? String ?? "").hasPrefix(h.cwd) {
       retired[h.old] = id
       pendingHandoff = nil
-      if prefs.bool(forKey: "autoEndOld"), let old = ss[h.old], old.pid > 1 { kill(old.pid, SIGTERM) }
     }
     var s = ss[id] ?? Session(id: id, cwd: j["c"] as? String ?? "?", phase: next, since: ts)
     if let p = j["p"] as? Int, p > 1, s.pid != Int32(p) {
@@ -646,13 +656,9 @@ final class Store: ObservableObject {
 
   /// Focus the Cursor window holding the session's folder, then its exact chat tab (optionally pre-filling a reply).
   func jump(_ s: Session, prompt: String? = nil) {
-    NSWorkspace.shared.open([URL(fileURLWithPath: s.cwd)],
-                            withApplicationAt: URL(fileURLWithPath: "/Applications/Cursor.app"),
-                            configuration: NSWorkspace.OpenConfiguration())
-    var c = URLComponents(string: "cursor://anthropic.claude-code/open")!
-    c.queryItems = [URLQueryItem(name: "session", value: s.id)]
-    if let p = prompt, !p.isEmpty { c.queryItems?.append(URLQueryItem(name: "prompt", value: p)) }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSWorkspace.shared.open(c.url!) }
+    var q = [URLQueryItem(name: "session", value: s.id)]
+    if let p = prompt, !p.isEmpty { q.append(URLQueryItem(name: "prompt", value: p)) }
+    openInCursor(s.cwd, q)
     close()
     withAnimation(Store.spring) { toasts.removeAll { $0.session == s.id } }
   }
@@ -660,23 +666,27 @@ final class Store: ObservableObject {
   /// Starts a fresh session in the same workspace, seeded with a handoff note built from the old transcript
   /// (no tokens spent summarising). The old session stays open and reachable via Claude's SendMessage.
   func handoff(_ s: Session) {
-    let file: URL
-    if let p = prepared[s.id], Date().timeIntervalSince(p.at) < 900 { file = p.file } else { file = writeHandoff(s) }
+    // The note travels inside the prompt: nothing to read outside the project, so no permission prompt.
+    let note: String
+    if let p = prepared[s.id], Date().timeIntervalSince(p.at) < 900, let t = try? String(contentsOf: p.file, encoding: .utf8) {
+      note = t
+    } else {
+      note = handoffNote(s)
+      writeHandoff(s)  // keep a copy on disk
+    }
     let prompt = """
-      Continue the work of my previous Claude session "\(s.name)" (it got too expensive to keep going). \
-      First read the handoff note at \(file.path) — it has the goal, my recent requests, the files touched and where it stopped. \
-      Open only the files you actually need; don't re-explore the codebase. \
-      Only if something essential is missing from the note, ask the old session with SendMessage \
-      (it's "\(s.name)" in ListAgents) — keep that rare, every message wakes its large context.
+      I'm continuing a previous Claude session ("\(s.name)") that got too expensive to keep going. \
+      Pick up where it stopped using the handoff below. Open only the files you actually need; don't re-explore the codebase.
+
+      \(note)
       """
-    NSWorkspace.shared.open([URL(fileURLWithPath: s.cwd)],
-                            withApplicationAt: URL(fileURLWithPath: "/Applications/Cursor.app"),
-                            configuration: NSWorkspace.OpenConfiguration())
-    var c = URLComponents(string: "cursor://anthropic.claude-code/open")!
-    c.queryItems = [URLQueryItem(name: "prompt", value: prompt)]
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSWorkspace.shared.open(c.url!) }
+    openInCursor(s.cwd, [URLQueryItem(name: "prompt", value: prompt)], send: prefs.bool(forKey: "autoSend"))
     close()
     pendingHandoff = (s.id, s.cwd, Date())
+    if prefs.bool(forKey: "autoEndOld"), s.pid > 1 {
+      let pid = s.pid
+      DispatchQueue.main.asyncAfter(deadline: .now() + 15) { kill(pid, SIGTERM) }  // after the new one has its prompt
+    }
     withAnimation(Store.spring) {
       retired[s.id] = ""
       toasts.removeAll { $0.session == s.id }
@@ -701,17 +711,39 @@ final class Store: ObservableObject {
     }
   }
 
+  /// Brings up the Cursor window for `cwd`, waits until it's really in front (so the tab lands in the right
+  /// workspace), then opens the Claude tab. With `send`, presses Return in the new chat box.
+  func openInCursor(_ cwd: String, _ query: [URLQueryItem], send: Bool = false) {
+    NSWorkspace.shared.open([URL(fileURLWithPath: cwd)], withApplicationAt: URL(fileURLWithPath: "/Applications/Cursor.app"),
+                            configuration: NSWorkspace.OpenConfiguration())
+    var c = URLComponents(string: "cursor://anthropic.claude-code/open")!
+    if !query.isEmpty { c.queryItems = query }
+    let url = c.url!, name = (cwd as NSString).lastPathComponent
+    let trusted = AXIsProcessTrusted()
+    var tries = 0
+    func ready() -> Bool { cursorWindowTitle()?.contains(name) == true }
+    func step() {
+      tries += 1
+      // Without Accessibility we can't see window titles: fall back to a fixed wait.
+      guard (trusted && ready()) || tries > (trusted ? 30 : 12) else {
+        return DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { step() }
+      }
+      NSWorkspace.shared.open(url)
+      guard send, trusted else { return }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+        guard ready() else { return }  // focus moved elsewhere: leave the prompt waiting rather than type into the wrong place
+        for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: down)?.post(tap: .cghidEventTap) }
+      }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { step() }
+  }
+
   func undoHandoff(_ s: Session) { withAnimation(Store.spring) { retired[s.id] = nil } }
 
   /// New session in a workspace (focuses its Cursor window), pre-filled with the default first prompt.
   func launch(_ cwd: String) {
-    NSWorkspace.shared.open([URL(fileURLWithPath: cwd)],
-                            withApplicationAt: URL(fileURLWithPath: "/Applications/Cursor.app"),
-                            configuration: NSWorkspace.OpenConfiguration())
-    var c = URLComponents(string: "cursor://anthropic.claude-code/open")!
     let first = prefs.string(forKey: "firstPrompt") ?? ""
-    if !first.isEmpty { c.queryItems = [URLQueryItem(name: "prompt", value: first)] }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSWorkspace.shared.open(c.url!) }
+    openInCursor(cwd, first.isEmpty ? [] : [URLQueryItem(name: "prompt", value: first)])
     close()
   }
 
@@ -788,19 +820,19 @@ final class Store: ObservableObject {
 
       - Workspace: \(s.cwd)
       - Branch: \(branch.isEmpty ? "unknown" : branch)
-      - Previous session: \(s.id) (still open as "\(s.name)")
+      - Previous session: \(s.id) ("\(s.name)")
 
       ## Original request
-      \(cut(prompts.first ?? "(none found)", 1500))
+      \(cut(prompts.first ?? "(none found)", 1000))
 
       ## Recent requests (oldest first)
-      \(prompts.suffix(6).map { "- " + cut($0.replacingOccurrences(of: "\n", with: " "), 400) }.joined(separator: "\n"))
+      \(prompts.suffix(6).map { "- " + cut($0.replacingOccurrences(of: "\n", with: " "), 300) }.joined(separator: "\n"))
 
       ## Files touched
-      \(files.isEmpty ? "(none)" : files.suffix(40).map { "- " + $0 }.joined(separator: "\n"))
+      \(files.isEmpty ? "(none)" : files.suffix(30).map { "- " + $0 }.joined(separator: "\n"))
 
       ## Where it stopped (last reply)
-      \(cut(last, 3000))
+      \(cut(last, 2500))
       """
   }
 
@@ -1258,7 +1290,9 @@ struct Drawer: View {
   @AppStorage("groupByWorkspace") private var groupByWorkspace = true
   @AppStorage("idleMinutes") private var idleMinutes = 10.0
   @AppStorage("firstPrompt") private var firstPrompt = ""
-  @AppStorage("autoEndOld") private var autoEndOld = false
+  @AppStorage("autoEndOld") private var autoEndOld = true
+  @AppStorage("autoSend") private var autoSend = true
+  @State private var axTrusted = AXIsProcessTrusted()
   @AppStorage("syncDevices") private var syncDevices = true
   var body: some View {
     let list = store.filtered
@@ -1678,7 +1712,9 @@ struct SettingsView: View {
   @AppStorage("groupByWorkspace") private var groupByWorkspace = true
   @AppStorage("idleMinutes") private var idleMinutes = 10.0
   @AppStorage("firstPrompt") private var firstPrompt = ""
-  @AppStorage("autoEndOld") private var autoEndOld = false
+  @AppStorage("autoEndOld") private var autoEndOld = true
+  @AppStorage("autoSend") private var autoSend = true
+  @State private var axTrusted = AXIsProcessTrusted()
   @AppStorage("syncDevices") private var syncDevices = true
 
   var body: some View {
@@ -1733,7 +1769,17 @@ struct SettingsView: View {
           }
         }
         Toggle("Group sessions by workspace", isOn: $groupByWorkspace)
-        Toggle("Close the old session when its fresh one starts", isOn: $autoEndOld)
+        Toggle("Fresh session: send the handoff automatically", isOn: $autoSend)
+        Toggle("Fresh session: close the old session", isOn: $autoEndOld)
+        if !axTrusted {
+          HStack {
+            Text("Auto-send and landing in the right workspace need Accessibility access.").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button("Grant…") {
+              AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
+            }
+          }
+        }
       } header: { Text("Optimization") } footer: {
         Text("Heavy sessions turn red (also at 350k+ context or 3+ parallel agents) with Compact and Fresh session actions.")
           .font(.caption).foregroundStyle(.secondary)
@@ -1762,6 +1808,7 @@ struct SettingsView: View {
       }
     }
     .formStyle(.grouped)
+    .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in axTrusted = AXIsProcessTrusted() }
     .frame(width: 480, height: 660)
     .tint((Theme(rawValue: theme) ?? .aurora).colors[1])
   }
