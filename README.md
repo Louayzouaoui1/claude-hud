@@ -28,15 +28,14 @@ Also included:
 
 It is light on resources: one Swift file, no dependencies, and about 1.5% CPU while idle.
 
-## Editors
+## Works in any IDE or terminal
 
-| | Status, toasts, costs, limits, permission answers | Open / Reply / Compact / Fresh session |
-|---|---|---|
-| **Cursor** | ✅ | ✅ |
-| **VS Code / VS Code Insiders** | ✅ | ✅ |
-| **Terminal, JetBrains, others** | ✅ | — (prompts are still answerable from the HUD) |
+| | Status, toasts, costs, limits, permission answers | Open | Reply / Compact / Fresh session |
+|---|---|---|---|
+| **Cursor, VS Code, VS Code Insiders** | ✅ | ✅ exact chat tab | ✅ typed into the tab for you |
+| **Terminal, iTerm, Ghostty, JetBrains, Zed, …** | ✅ | ✅ brings that app forward | ✅ copied to the clipboard, ⌘V to paste |
 
-The HUD is driven by Claude Code hooks, so monitoring works wherever Claude Code runs. The "take me there" actions use the Claude Code extension's `…://anthropic.claude-code/open` link, which the HUD sends to whichever supported editor is running.
+The HUD is driven by Claude Code hooks, so monitoring works wherever Claude Code runs. For each session it finds the app that hosts it by walking up from the `claude` process. Cursor and VS Code get the Claude Code extension's deep link (`…://anthropic.claude-code/open`), which picks the exact tab. Every other app is focused, and any text goes to the clipboard rather than being typed into a window the HUD can't see.
 
 ## Install
 
