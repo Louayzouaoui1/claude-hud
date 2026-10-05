@@ -2,8 +2,8 @@
 #   brew tap louayzouaoui1/claude-hud https://github.com/Louayzouaoui1/claude-hud
 #   brew install --cask claude-hud
 cask "claude-hud" do
-  version "0.0.0"
-  sha256 :no_check
+  version "1.1.1"
+  sha256 "c6a7fd3420200bbbd67f684f59e0afbd5ab41a02143a47ba5314d40108225c68"
 
   url "https://github.com/Louayzouaoui1/claude-hud/releases/download/v#{version}/ClaudeHUD-#{version}.zip"
   name "Claude HUD"
