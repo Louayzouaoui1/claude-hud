@@ -111,10 +111,23 @@ var editor: Editor {
     ?? editors.first { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundle) != nil } ?? editors[0]
 }
 
+/// The app a session runs in (IDE, terminal, …): the first regular app up the Claude process's parent chain.
+func hostApp(_ pid: Int32) -> NSRunningApplication? {
+  var p = pid
+  for _ in 0..<32 where p > 1 {
+    if let a = NSRunningApplication(processIdentifier: p), a.activationPolicy == .regular { return a }
+    var info = kinfo_proc(), size = MemoryLayout<kinfo_proc>.size
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, p]
+    guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+    p = info.kp_eproc.e_ppid
+  }
+  return nil
+}
+
 /// Title of the editor's focused window, when it is frontmost (needs Accessibility).
-func cursorWindowTitle() -> String? {
+func cursorWindowTitle(_ bundle: String = editor.bundle) -> String? {
   guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication,
-        app.bundleIdentifier == editor.bundle else { return nil }
+        app.bundleIdentifier == bundle else { return nil }
   var win: CFTypeRef?, title: CFTypeRef?
   let ax = AXUIElementCreateApplication(app.processIdentifier)
   guard AXUIElementCopyAttributeValue(ax, kAXFocusedWindowAttribute as CFString, &win) == .success, let win else { return nil }
@@ -706,6 +719,29 @@ final class Store: ObservableObject {
     withAnimation(Store.spring) { toasts.append(Toast(session: "", text: text, title: title)) }
   }
 
+  /// The editor a session runs in, when it's one we can deep-link into (else the running editor).
+  func host(_ s: Session) -> Editor {
+    let b = hostApp(s.pid)?.bundleIdentifier
+    return editors.first { $0.bundle == b } ?? editor
+  }
+
+  /// Sessions in an app without a deep link (terminal, JetBrains, …): bring that app forward and put any
+  /// text on the clipboard. Returns false when the session's app is a supported editor (or unknown).
+  func reach(_ s: Session, _ text: String?, fresh: Bool = false) -> Bool {
+    guard let app = hostApp(s.pid), !editors.contains(where: { $0.bundle == app.bundleIdentifier }) else { return false }
+    app.activate()
+    if let text, !text.isEmpty {
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(text, forType: .string)
+      let where_ = app.localizedName ?? "the terminal"
+      withAnimation(Store.spring) {
+        toasts.append(Toast(session: "", text: fresh ? "Start a new claude session in \(where_) and paste (⌘V)." : "Paste it into \(s.name) in \(where_) (⌘V).",
+                            title: fresh ? "Handoff copied" : "Reply copied"))
+      }
+    }
+    return true
+  }
+
   func dismiss(_ t: Toast) { withAnimation(Store.spring) { toasts.removeAll { $0.id == t.id } } }
 
   func close() {
@@ -720,7 +756,7 @@ final class Store: ObservableObject {
   func jump(_ s: Session, prompt: String? = nil) {
     var q = [URLQueryItem(name: "session", value: s.id)]
     if let p = prompt, !p.isEmpty { q.append(URLQueryItem(name: "prompt", value: p)) }
-    openInCursor(s.cwd, q)
+    if !reach(s, prompt) { openInCursor(s.cwd, q, in: host(s)) }
     close()
     withAnimation(Store.spring) { toasts.removeAll { $0.session == s.id } }
   }
@@ -742,10 +778,11 @@ final class Store: ObservableObject {
 
       \(note)
       """
-    openInCursor(s.cwd, [URLQueryItem(name: "prompt", value: prompt)], send: prefs.bool(forKey: "autoSend"))
+    let manual = reach(s, prompt, fresh: true)
+    if !manual { openInCursor(s.cwd, [URLQueryItem(name: "prompt", value: prompt)], send: prefs.bool(forKey: "autoSend"), in: host(s)) }
     close()
     pendingHandoff = (s.id, s.cwd, Date())
-    if prefs.bool(forKey: "autoEndOld"), s.pid > 1 {
+    if !manual, prefs.bool(forKey: "autoEndOld"), s.pid > 1 {  // pasted by hand: the user ends the old one
       let pid = s.pid
       DispatchQueue.main.asyncAfter(deadline: .now() + 15) { kill(pid, SIGTERM) }  // after the new one has its prompt
     }
@@ -775,8 +812,7 @@ final class Store: ObservableObject {
 
   /// Brings up the Cursor window for `cwd`, waits until it's really in front (so the tab lands in the right
   /// workspace), then opens the Claude tab. With `send`, presses Return in the new chat box.
-  func openInCursor(_ cwd: String, _ query: [URLQueryItem], send: Bool = false) {
-    let ed = editor
+  func openInCursor(_ cwd: String, _ query: [URLQueryItem], send: Bool = false, in ed: Editor = editor) {
     if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: ed.bundle) {
       NSWorkspace.shared.open([URL(fileURLWithPath: cwd)], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
     }
@@ -785,7 +821,7 @@ final class Store: ObservableObject {
     let url = c.url!, name = (cwd as NSString).lastPathComponent
     let trusted = AXIsProcessTrusted()
     var tries = 0
-    func ready() -> Bool { cursorWindowTitle()?.contains(name) == true }
+    func ready() -> Bool { cursorWindowTitle(ed.bundle)?.contains(name) == true }
     func step() {
       tries += 1
       // Without Accessibility we can't see window titles: fall back to a fixed wait.
@@ -1115,8 +1151,9 @@ struct RequestBlock: View {
         }
         Pill(title: "Deny", icon: "xmark", tint: red) { store.answer(s, .deny) }
         Spacer(minLength: 0)
-        Pill(title: editor.name, icon: "arrow.up.right") { store.answer(s, .cursor) }
-          .help("Answer in \(editor.name) instead")
+        let app = hostApp(s.pid)?.localizedName ?? editor.name
+        Pill(title: app, icon: "arrow.up.right") { store.answer(s, .cursor) }
+          .help("Answer in \(app) instead")
       }
       if let always = r.always {
         Text("Always = don't ask again for \(always)").font(.system(size: 9.5, design: .monospaced))
