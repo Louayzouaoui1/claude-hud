@@ -10,7 +10,7 @@ cask "claude-hud" do
   desc "Heads-up display for every Claude Code session"
   homepage "https://github.com/Louayzouaoui1/claude-hud"
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
   depends_on formula: "jq"
 
   app "ClaudeHUD.app"
