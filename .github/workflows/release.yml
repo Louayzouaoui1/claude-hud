@@ -1,0 +1,48 @@
+# Every push to main that touches the app builds a universal ClaudeHUD.app, publishes it as a
+# GitHub release and points the Homebrew cask at it, so `brew upgrade` always gets the latest.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: ["Sources/**", "Package.swift", "hooks/**", "scripts/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        run: echo "VERSION=1.1.${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          scripts/bundle.sh "$VERSION"
+          ditto -c -k --keepParent dist/ClaudeHUD.app "dist/ClaudeHUD-$VERSION.zip"
+          echo "SHA=$(shasum -a 256 "dist/ClaudeHUD-$VERSION.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" "dist/ClaudeHUD-$VERSION.zip" \
+            --title "Claude HUD $VERSION" --generate-notes --target "$GITHUB_SHA"
+
+      - name: Bump the cask
+        run: |
+          sed -i '' -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 .*/  sha256 \"$SHA\"/" Casks/claude-hud.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/claude-hud.rb
+          git commit -m "Cask: Claude HUD $VERSION"
+          git pull --rebase origin main
+          git push origin HEAD:main

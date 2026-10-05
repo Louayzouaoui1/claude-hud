@@ -7,11 +7,33 @@ Thanks for helping out! Issues and pull requests are welcome.
 You need macOS 14+, the Xcode command-line tools and `jq`.
 
 ```sh
-swiftc -swift-version 5 -O main.swift -o /tmp/ClaudeHUD   # quick compile check
-./install.sh                                              # build, install, wire the hooks, restart the app
+swift build          # quick compile check
+./install.sh         # build, install, wire the hooks, restart the app
 ```
 
-The whole app is `main.swift`. The three hook scripts (`event.sh`, `perm.sh`, `statusline.sh`) feed it through files in `~/.claude/hud/`.
+## Layout
+
+```
+Sources/ClaudeHUD/
+  main.swift            app startup
+  App.swift             panel, hotkey, menu-bar item, settings wiring
+  Config.swift          paths, preferences, themes, hotkeys
+  Model.swift           sessions, usage, limits, devices
+  System.swift          host-app detection, processes, formatting
+  TokenCounter.swift    token and cost counting from transcripts
+  Store/                state (Store.swift) plus usage, events, permissions and actions
+  Views/                drawer, cards, toasts, settings, shared primitives
+hooks/                  event.sh, perm.sh, statusline.sh: Claude Code hooks that feed the app
+scripts/bundle.sh       builds dist/ClaudeHUD.app (universal)
+scripts/setup-hooks.sh  wires the hooks into ~/.claude/settings.json (or --remove)
+Casks/claude-hud.rb     Homebrew cask, bumped automatically on release
+```
+
+The hook scripts talk to the app through files in `~/.claude/hud/`.
+
+## Releases
+
+Every push to `main` that touches `Sources/`, `hooks/`, `scripts/` or `Package.swift` runs `.github/workflows/release.yml`. It builds a universal app, publishes it as release `v1.1.<run>` and updates the cask, so `brew upgrade` picks it up.
 
 ## Pull requests
 

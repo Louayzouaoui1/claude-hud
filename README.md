@@ -32,7 +32,7 @@ Also included:
 - A menu-bar item, idle reminders, and four themes
 - Multi-Mac totals through iCloud Drive, with a list of your remote and claude.ai/code sessions
 
-It is light on resources: one Swift file, no dependencies, and about 1.5% CPU while idle.
+It is light on resources: native SwiftUI, no dependencies, and about 1.5% CPU while idle.
 
 ## Works in any IDE or terminal
 
@@ -45,20 +45,33 @@ The HUD is driven by Claude Code hooks, so monitoring works wherever Claude Code
 
 ## Install
 
-Requires macOS 14+, the Xcode command-line tools (`xcode-select --install`) and `jq` (`brew install jq`).
+Requires macOS 14+.
+
+### Homebrew
+
+```sh
+brew tap louayzouaoui1/claude-hud https://github.com/Louayzouaoui1/claude-hud
+brew install --cask claude-hud
+```
+
+Update with `brew upgrade --cask claude-hud`. Every change merged to `main` is built by GitHub Actions and published as a new release, so the cask always points at the latest build. `brew uninstall --cask claude-hud` takes the hooks back out of your settings.
+
+### From source
+
+Needs the Xcode command-line tools (`xcode-select --install`) and `jq` (`brew install jq`).
 
 ```sh
 git clone https://github.com/Louayzouaoui1/claude-hud && cd claude-hud && ./install.sh
 ```
 
-`install.sh` does the following:
+Both ways do the same setup:
 
-1. Compiles `main.swift` into `~/Applications/ClaudeHUD.app`.
-2. Copies three small hook scripts to `~/.claude/hud/`.
-3. Adds Claude HUD hooks and a status line to `~/.claude/settings.json`. A backup is saved as `settings.json.bak-claudehud`. Your other hooks are left untouched, and an existing status line is kept.
-4. Starts the app and adds it as a login item.
+1. Install `ClaudeHUD.app` (Homebrew: `/Applications`; from source: `~/Applications`).
+2. Copy three small hook scripts to `~/.claude/hud/`.
+3. Add Claude HUD hooks and a status line to `~/.claude/settings.json`. A backup is saved as `settings.json.bak-claudehud`. Your other hooks are left untouched, and an existing status line is kept.
+4. Start the app.
 
-It's safe to re-run. Grant **Accessibility** when asked: the HUD needs it to land in the right editor window and to auto-send handoffs. Set `CODESIGN_ID` to your own signing identity if you want that permission to survive rebuilds.
+It's safe to re-run. Grant **Accessibility** when asked: the HUD needs it to land in the right editor window and to auto-send handoffs. The app is ad-hoc signed, so macOS may ask again after an update. From source, set `CODESIGN_ID` to your own signing identity to keep the grant across rebuilds.
 
 ## How it works
 
