@@ -20,6 +20,12 @@ A native macOS heads-up display for every [Claude Code](https://claude.com/claud
 
 Also included:
 
+- **Save-tokens tips** based on your own transcripts. You get the top three by tokens at stake, each with a one-click fix:
+  - a large context that is re-sent with every message → *Compact*
+  - a cache that expired during breaks, so the session paid full price again → compact before stepping away
+  - Opus or Fable used for heavy routine work → *Use Sonnet*, showing what share it would save
+  - subagents eating most of the day
+  - a 5-hour limit you'll hit at your current pace
 - A global hotkey and full keyboard control (`↑↓ ↩ A D R /`)
 - Search across sessions
 - Do Not Disturb, plus automatic quiet during Zoom meetings

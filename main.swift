@@ -85,7 +85,18 @@ struct Session: Identifiable, Equatable {
   var name: String { title.isEmpty ? folder : title }
 }
 
-struct Usage: Equatable { var tokens = 0, today = 0, context = 0, lastText = "", cost = 0.0, todayCost = 0.0 }
+struct Usage: Equatable {
+  var tokens = 0, today = 0, context = 0, lastText = "", cost = 0.0, todayCost = 0.0
+  var model = ""   // last model that answered
+  var recache = 0  // today's tokens written to cache again because it expired (breaks, resumes)
+}
+
+/// A way to spend fewer tokens, shown in the drawer's Tips section.
+struct Tip: Identifiable {
+  let id: String, icon: String, text: String
+  var action: (title: String, session: Session, prompt: String)?
+  var weight = 0  // tokens at stake, for ordering
+}
 
 struct Device: Identifiable, Equatable {
   let id: String, name: String, updated: Date, tokens: Int, cost: Double, live: Int
@@ -243,6 +254,9 @@ final class TokenCounter {
       let pr = price(msg["model"] as? String ?? "")
       let cost = (Double(n("input_tokens")) * pr.i + Double(n("output_tokens")) * pr.o + Double(cw - cw1h) * pr.i * 1.25
         + Double(cw1h) * pr.i * 2 + Double(n("cache_read_input_tokens")) * pr.r) / 1e6
+      // Most of the context written again = the cache had expired, so the whole history was paid at full price.
+      if m[id] == nil, isToday, cw >= 50_000, cw * 2 > u.context { u.recache += cw }
+      if let model = msg["model"] as? String, !model.hasPrefix("<") { u.model = model }
       m[id] = (n("input_tokens") + cw + n("output_tokens"), isToday, cost)
     }
     u.tokens = m.values.reduce(0) { $0 + $1.n }
@@ -365,6 +379,43 @@ final class Store: ObservableObject {
     if u.context >= 350_000 { return "context \(fmt(u.context)) is re-sent every turn" }
     if s.agents.count >= 3 { return "\(s.agents.count) agents running at once" }
     return nil
+  }
+
+  @Published var dismissedTips: Set<String> = []
+
+  /// Concrete ways to use fewer tokens, worst first. Sessions already flagged heavy get their own banner instead.
+  var tips: [Tip] {
+    var t: [Tip] = []
+    for s in sessions.values where s.phase != .ended && retired[s.id] == nil && heavy(s) == nil {
+      let u = usage(s)
+      if u.context >= 120_000, s.phase != .working {
+        t.append(Tip(id: "ctx" + s.id, icon: "text.append",
+                     text: "\(s.name) re-sends \(fmt(u.context)) of context with every message. Compact it, or start a fresh session for the next task.",
+                     action: ("Compact", s, "/compact"), weight: u.context))
+      }
+      if u.recache >= 150_000 {
+        t.append(Tip(id: "cache" + s.id, icon: "clock.arrow.circlepath",
+                     text: "\(s.name) paid full price for \(fmt(u.recache)) tokens today because its cache expired during breaks (5 min). Compact before stepping away, and end sessions you're done with.",
+                     action: ("Compact", s, "/compact"), weight: u.recache))
+      }
+      let m = u.model.lowercased(), save = 1 - price("sonnet-5").o / price(m).o
+      if m.contains("opus") || m.contains("fable"), u.today >= 500_000, save >= 0.3 {
+        t.append(Tip(id: "model" + s.id, icon: "cpu",
+                     text: "\(s.name) runs on \(m.contains("fable") ? "Fable" : "Opus"). Sonnet costs \(Int(save * 100))% less and handles routine edits, tests and renames well.",
+                     action: ("Use Sonnet", s, "/model sonnet"), weight: Int(Double(u.today) * save)))
+      }
+    }
+    let sub = usage.filter { $0.key.contains("/subagents/") }.values.reduce(0) { $0 + $1.today }
+    if todayTokens >= 1_000_000, Double(sub) >= 0.4 * Double(todayTokens) {
+      t.append(Tip(id: "agents", icon: "person.2.wave.2",
+                   text: "Subagents used \(sub * 100 / todayTokens)% of today's tokens. Ask for fewer parallel agents, or name the files to look at instead of a broad search.", weight: sub))
+    }
+    t.sort { $0.weight > $1.weight }
+    if let out = fiveHour?.out {
+      t.insert(Tip(id: "pace", icon: "gauge.with.dots.needle.67percent",
+                   text: "At this pace you hit the 5-hour limit at \(clock(out)). Pause the sessions you aren't watching, or move routine work to Sonnet."), at: 0)
+    }
+    return Array(t.filter { !dismissedTips.contains($0.id) }.prefix(3))
   }
 
   /// Token growth per session over the last 10 minutes; warns once when a session turns heavy.
@@ -1446,6 +1497,7 @@ struct Drawer: View {
       }
 
       if !store.devices.isEmpty || !store.remote.isEmpty || store.elsewhere > 0 { DevicesStrip(store: store) }
+      if !store.tips.isEmpty { TipsStrip(store: store) }
 
       Rectangle().fill(LinearGradient(colors: [.clear, .white.opacity(0.12), .clear], startPoint: .leading, endPoint: .trailing))
         .frame(height: 1)
@@ -1623,6 +1675,43 @@ struct DevicesStrip: View {
           .contentShape(Rectangle())
           .onTapGesture { NSWorkspace.shared.open(URL(string: "https://claude.ai/code/\(r.id)")!) }
           .help("Remote / cloud session · \(r.model)\(r.branch.isEmpty ? "" : " · " + r.branch) — click to open on claude.ai")
+        }
+      }
+    }
+  }
+}
+
+struct TipsStrip: View {
+  @ObservedObject var store: Store
+  var body: some View {
+    let folded = store.collapsed.contains("#tips")
+    let tips = store.tips
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 6) {
+        Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(0.4))
+          .rotationEffect(.degrees(folded ? 0 : 90))
+        Text("SAVE TOKENS").font(.system(size: 9.5, weight: .bold, design: .rounded)).tracking(1.4).foregroundStyle(.white.opacity(0.45))
+        Text("\(tips.count)").font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
+        Spacer()
+      }
+      .contentShape(Rectangle())
+      .onTapGesture { store.toggleCollapse("#tips") }
+      if !folded {
+        ForEach(tips) { t in
+          HStack(alignment: .top, spacing: 8) {
+            Image(systemName: t.icon).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Phase.done.color).frame(width: 14)
+            VStack(alignment: .leading, spacing: 6) {
+              Text(t.text).font(.system(size: 11, design: .rounded)).foregroundStyle(.white.opacity(0.7))
+                .fixedSize(horizontal: false, vertical: true)
+              if let a = t.action {
+                Pill(title: a.title, icon: "arrow.up.right", tint: Phase.done.color) { store.jump(a.session, prompt: a.prompt) }
+              }
+            }
+            Spacer(minLength: 0)
+            DismissButton { withAnimation(Store.spring) { _ = store.dismissedTips.insert(t.id) } }
+          }
+          .padding(9)
+          .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Phase.done.color.opacity(0.06)))
         }
       }
     }
