@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/Louayzouaoui1/claude-hud/discussions
+    about: Ask how something works or float an idea before opening an issue.
