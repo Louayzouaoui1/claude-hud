@@ -1,4 +1,4 @@
-// Claude HUD — an edge drawer + toasts for Claude Code sessions running in Cursor.
+// Claude HUD — an edge drawer + toasts for Claude Code sessions running in Cursor or VS Code.
 // Fed by hooks (see install.sh): events.jsonl = session state, req/ + ans/ = permission
 // requests answered from here, limits.json = 5-hour / weekly usage.
 import AppKit
@@ -100,10 +100,21 @@ struct Remote: Identifiable, Equatable {
 
 let deviceDir = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Claude HUD/devices")
 
-/// Title of Cursor's focused window, when Cursor is frontmost (needs Accessibility).
+/// Editors whose Claude Code extension answers `<scheme>://anthropic.claude-code/open`.
+struct Editor { let name: String, bundle: String, scheme: String }
+let editors = [Editor(name: "Cursor", bundle: "com.todesktop.230313mzl4w4u92", scheme: "cursor"),
+               Editor(name: "VS Code", bundle: "com.microsoft.VSCode", scheme: "vscode"),
+               Editor(name: "VS Code Insiders", bundle: "com.microsoft.VSCodeInsiders", scheme: "vscode-insiders")]
+/// The running editor (first match wins), else the first one installed.
+var editor: Editor {
+  editors.first { !NSRunningApplication.runningApplications(withBundleIdentifier: $0.bundle).isEmpty }
+    ?? editors.first { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundle) != nil } ?? editors[0]
+}
+
+/// Title of the editor's focused window, when it is frontmost (needs Accessibility).
 func cursorWindowTitle() -> String? {
   guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication,
-        app.bundleIdentifier == "com.todesktop.230313mzl4w4u92" else { return nil }
+        app.bundleIdentifier == editor.bundle else { return nil }
   var win: CFTypeRef?, title: CFTypeRef?
   let ax = AXUIElementCreateApplication(app.processIdentifier)
   guard AXUIElementCopyAttributeValue(ax, kAXFocusedWindowAttribute as CFString, &win) == .success, let win else { return nil }
@@ -765,9 +776,11 @@ final class Store: ObservableObject {
   /// Brings up the Cursor window for `cwd`, waits until it's really in front (so the tab lands in the right
   /// workspace), then opens the Claude tab. With `send`, presses Return in the new chat box.
   func openInCursor(_ cwd: String, _ query: [URLQueryItem], send: Bool = false) {
-    NSWorkspace.shared.open([URL(fileURLWithPath: cwd)], withApplicationAt: URL(fileURLWithPath: "/Applications/Cursor.app"),
-                            configuration: NSWorkspace.OpenConfiguration())
-    var c = URLComponents(string: "cursor://anthropic.claude-code/open")!
+    let ed = editor
+    if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: ed.bundle) {
+      NSWorkspace.shared.open([URL(fileURLWithPath: cwd)], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+    }
+    var c = URLComponents(string: "\(ed.scheme)://anthropic.claude-code/open")!
     if !query.isEmpty { c.queryItems = query }
     let url = c.url!, name = (cwd as NSString).lastPathComponent
     let trusted = AXIsProcessTrusted()
@@ -1102,8 +1115,8 @@ struct RequestBlock: View {
         }
         Pill(title: "Deny", icon: "xmark", tint: red) { store.answer(s, .deny) }
         Spacer(minLength: 0)
-        Pill(title: "Cursor", icon: "arrow.up.right") { store.answer(s, .cursor) }
-          .help("Answer in Cursor instead")
+        Pill(title: editor.name, icon: "arrow.up.right") { store.answer(s, .cursor) }
+          .help("Answer in \(editor.name) instead")
       }
       if let always = r.always {
         Text("Always = don't ask again for \(always)").font(.system(size: 9.5, design: .monospaced))
@@ -1831,8 +1844,8 @@ struct SettingsView: View {
         Toggle("Answer permission prompts from the HUD", isOn: $answerInHUD)
       } header: { Text("Permissions") } footer: {
         Text(answerInHUD
-             ? "Prompts go to the HUD first; Cursor shows its dialog once you pick “Cursor”."
-             : "Prompts appear in Cursor as usual; the HUD only notifies you.")
+             ? "Prompts go to the HUD first; \(editor.name) shows its dialog once you pick “\(editor.name)”."
+             : "Prompts appear in \(editor.name) as usual; the HUD only notifies you.")
           .font(.caption).foregroundStyle(.secondary)
       }
       Section {
