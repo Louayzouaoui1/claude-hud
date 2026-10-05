@@ -10,25 +10,33 @@ cask "claude-hud" do
   desc "Heads-up display for every Claude Code session"
   homepage "https://github.com/Louayzouaoui1/claude-hud"
 
-  depends_on macos: :sonoma
   depends_on formula: "jq"
+  depends_on macos: :sonoma
 
   app "ClaudeHUD.app"
 
-  postflight do
+  postflight_steps do
     # Ad-hoc signed (no Apple Developer ID yet), so clear quarantine or Gatekeeper blocks the launch.
-    system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{appdir}/ClaudeHUD.app"]
-    system_command "#{appdir}/ClaudeHUD.app/Contents/Resources/setup-hooks.sh",
-                   args: ["#{appdir}/ClaudeHUD.app/Contents/Resources"]
-    system_command "/usr/bin/open", args: ["#{appdir}/ClaudeHUD.app"]
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/ClaudeHUD.app"], must_succeed: false
+    run "ClaudeHUD.app/Contents/Resources/setup-hooks.sh",
+        base:           :appdir,
+        args:           ["{{appdir}}/ClaudeHUD.app/Contents/Resources"],
+        writable_paths: [".claude"],
+        writable_base:  :home
+    run "/usr/bin/open", args: ["{{appdir}}/ClaudeHUD.app"], must_succeed: false
+  end
+
+  uninstall_preflight_steps do
+    run "ClaudeHUD.app/Contents/Resources/setup-hooks.sh",
+        base:           :appdir,
+        args:           ["--remove"],
+        writable_paths: [".claude"],
+        writable_base:  :home,
+        must_succeed:   false
   end
 
   uninstall quit:       "com.louay.claudehud",
-            login_item: "ClaudeHUD",
-            script:     {
-              executable: "#{appdir}/ClaudeHUD.app/Contents/Resources/setup-hooks.sh",
-              args:       ["--remove"],
-            }
+            login_item: "ClaudeHUD"
 
   zap trash: [
     "~/.claude/hud",
