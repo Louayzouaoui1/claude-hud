@@ -1,0 +1,300 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Claude HUD scene</title>
+<!-- Marketing scene: a faithful HTML recreation of the HUD with demo data.
+     render(t) draws the frame at t seconds; render.js screenshots it frame by frame. -->
+<style>
+:root{
+  --perm:rgb(255,171,82);--done:rgb(97,245,189);--work:rgb(115,184,255);--ready:#9e9e9e;--ended:#6b6b6b;
+  --red:rgb(255,115,128);--a1:rgb(102,242,242);--a2:rgb(115,184,255);--violet:rgb(191,166,255);
+  --rounded:ui-rounded,"SF Pro Rounded",system-ui,sans-serif;--mono:ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:#05060a;color:#fff;font-family:system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+#stage{position:absolute;inset:0;overflow:hidden}
+.wall{position:absolute;inset:0;background:
+  radial-gradient(1100px 700px at 78% 18%,rgba(70,110,255,.35),transparent 60%),
+  radial-gradient(900px 700px at 15% 90%,rgba(140,60,220,.30),transparent 60%),
+  radial-gradient(700px 500px at 95% 95%,rgba(0,200,200,.18),transparent 60%),
+  linear-gradient(160deg,#0b1024,#07070d 55%,#0a0614)}
+/* faux editor */
+.editor{position:absolute;left:70px;top:64px;width:1290px;height:950px;border-radius:14px;background:#14151a;border:1px solid rgba(255,255,255,.08);
+  box-shadow:0 40px 120px rgba(0,0,0,.6);overflow:hidden;display:grid;grid-template-columns:230px 1fr;grid-template-rows:38px 1fr 260px}
+.bar{grid-column:1/3;background:#1b1c22;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid rgba(255,255,255,.06);font-size:12.5px;color:rgba(255,255,255,.45)}
+.bar i{width:12px;height:12px;border-radius:50%;display:block}
+.bar span{margin-left:auto;margin-right:auto}
+.tree{grid-row:2/4;background:#17181d;padding:14px 12px;font:12.5px/2 var(--mono);color:rgba(255,255,255,.45);border-right:1px solid rgba(255,255,255,.05)}
+.tree b{color:rgba(255,255,255,.75);font-weight:500}
+.code{padding:18px 22px;font:14px/1.75 var(--mono);color:#c9d1d9;white-space:pre}
+.k{color:#ff7b9c}.s{color:#a5d6ff}.f{color:#d2a8ff}.c{color:#6e7681}.n{color:#79c0ff}
+.term{border-top:1px solid rgba(255,255,255,.07);background:#111216;padding:14px 22px;font:13px/1.7 var(--mono);color:rgba(255,255,255,.6);white-space:pre}
+.term .o{color:#ff9e64}
+.dim{position:absolute;inset:0;background:linear-gradient(90deg,rgba(4,5,10,.92) 0%,rgba(4,5,10,.82) 38%,rgba(4,5,10,.35) 70%,rgba(4,5,10,.1))}
+/* hud */
+#hud{position:absolute;inset:0;zoom:1.5}
+.glass{position:relative;border-radius:24px;background:
+  radial-gradient(280px 280px at 0 0,var(--tint),transparent 70%),
+  linear-gradient(180deg,rgba(23,23,23,.78),rgba(5,5,5,.9));
+  backdrop-filter:blur(30px) saturate(1.4);box-shadow:0 12px 48px rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.16)}
+.drawer{position:absolute;right:12px;top:18px;width:340px;max-height:684px;padding:16px;display:flex;flex-direction:column;gap:16px;transform-origin:right center}
+.drawer>*{flex:none}.drawer>.cards{flex:1 1 auto;min-height:0;overflow:hidden;-webkit-mask:linear-gradient(180deg,#000 88%,transparent)}
+.row{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.dot{position:relative;width:18px;height:18px;flex:none}
+.dot .core{position:absolute;left:5.5px;top:5.5px;width:7px;height:7px;border-radius:50%;background:var(--c)}
+.dot .halo{position:absolute;left:1px;top:1px;width:16px;height:16px;border-radius:50%;background:radial-gradient(var(--c) 0,transparent 70%);opacity:.45}
+.dot svg{position:absolute;inset:0}
+.brand{font:800 11px var(--rounded);letter-spacing:3px;color:rgba(255,255,255,.75)}
+.muted{color:rgba(255,255,255,.4)}
+.ibtn{width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,.05);display:grid;place-items:center;color:rgba(255,255,255,.45)}
+.money{font:600 16px var(--mono);text-align:right}
+.small{font:500 9px var(--rounded)}
+.limits{display:flex;gap:16px}
+.limit{flex:1;display:flex;flex-direction:column;gap:6px}
+.lt{font:700 9.5px var(--rounded);letter-spacing:1.4px;color:rgba(255,255,255,.45)}
+.lp{font:600 13px var(--mono);margin-left:auto}
+.track{height:5px;border-radius:5px;background:rgba(255,255,255,.07);position:relative}
+.fill{position:absolute;left:0;top:0;bottom:0;border-radius:5px}
+.lnote{font:500 9.5px var(--rounded)}
+.sep{height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.12),transparent)}
+.ws{display:flex;align-items:center;gap:6px;padding:2px 4px;font:700 9.5px var(--rounded);letter-spacing:1.3px;color:rgba(255,255,255,.55)}
+.ws .line{flex:1;height:1px;background:rgba(255,255,255,.08)}
+.ws .m{font:600 9.5px var(--mono);letter-spacing:0;color:rgba(255,255,255,.4)}
+.cards{display:flex;flex-direction:column;gap:8px}
+.card{padding:12px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid var(--b);display:flex;flex-direction:column;gap:9px}
+.name{font:600 13.5px var(--rounded);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub{font:500 10.5px var(--rounded);color:rgba(255,255,255,.45)}
+.tok{font:600 12px var(--mono);color:rgba(255,255,255,.85);text-align:right}
+.ctx{display:flex;gap:4px;align-items:center;font:500 9.5px var(--mono);justify-content:flex-end}
+.act{display:flex;gap:6px;align-items:center;font:10.5px var(--mono);color:rgba(255,255,255,.55);white-space:nowrap;overflow:hidden}
+.act i{width:2px;height:12px;background:rgba(115,184,255,.7);flex:none}
+.last{font:11.5px/1.35 var(--rounded);color:rgba(255,255,255,.6)}
+.req{display:flex;flex-direction:column;gap:9px}
+.cmd{padding:9px;border-radius:9px;background:rgba(0,0,0,.4);font:11px/1.4 var(--mono);color:rgba(255,255,255,.78)}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:6px 9px;border-radius:99px;font:600 11.5px var(--rounded);border:1px solid rgba(255,255,255,.08);white-space:nowrap}
+.pill.p{color:rgba(0,0,0,.85);border-color:rgba(255,255,255,.3)}
+.heavy{padding:9px;border-radius:10px;background:rgba(255,115,128,.08);display:flex;flex-direction:column;gap:7px}
+.flag{display:flex;gap:6px;align-items:center;font:600 11px var(--rounded);color:var(--red)}
+.dev{display:flex;align-items:center;gap:8px;font:500 11px var(--rounded)}
+.dev .m{margin-left:auto;font:600 10px var(--mono);color:rgba(255,255,255,.6)}
+.d5{width:5px;height:5px;border-radius:50%;flex:none}
+.retired{padding:12px;border-radius:16px;background:rgba(191,166,255,.05);border:1px dashed rgba(191,166,255,.3)}
+.toast{position:absolute;right:12px;top:10px;width:340px;padding:14px;border-radius:20px;display:flex;flex-direction:column;gap:10px}
+.accent{position:absolute;left:1px;top:16px;bottom:16px;width:3px;border-radius:3px}
+.tag{font:800 9px var(--rounded);letter-spacing:1.2px;padding:3px 7px;border-radius:99px}
+.reply{display:flex;align-items:center;gap:8px;padding:9px 11px;border-radius:11px;background:rgba(0,0,0,.45);border:1px solid rgba(97,245,189,.55);font:12.5px var(--rounded)}
+.caret{display:inline-block;width:1.5px;height:14px;background:#fff;vertical-align:-2px;margin-left:1px}
+.handle{position:absolute;right:1px;top:50%;width:4px;border-radius:4px;transform:translateY(-50%)}
+.hl{box-shadow:0 0 0 2px rgba(255,255,255,.5),0 0 30px 4px rgba(115,184,255,.35);border-radius:12px}
+/* overlays */
+#cap{position:absolute;left:130px;top:0;bottom:0;width:780px;display:flex;flex-direction:column;justify-content:center;gap:22px}
+.kick{font:700 18px var(--rounded);letter-spacing:5px;background:linear-gradient(90deg,var(--a1),var(--a2));-webkit-background-clip:text;color:transparent}
+.head{font:700 66px/1.05 system-ui;letter-spacing:-1.6px}
+.lede{font:400 27px/1.45 system-ui;color:rgba(255,255,255,.66);max-width:700px}
+#title,#end{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;text-align:center}
+.logo{font:800 30px var(--rounded);letter-spacing:12px;color:rgba(255,255,255,.8);display:flex;align-items:center;gap:22px}
+.big{padding-bottom:.12em;font:800 132px/1 system-ui;letter-spacing:-4px;background:linear-gradient(180deg,#fff,rgba(255,255,255,.62));-webkit-background-clip:text;color:transparent}
+.tagline{font:400 34px/1.4 system-ui;color:rgba(255,255,255,.7);max-width:1000px;text-wrap:balance}
+.chips{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+.chip{font:600 20px var(--rounded);padding:10px 20px;border-radius:99px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:rgba(255,255,255,.8)}
+.cli{font:500 26px var(--mono);padding:18px 28px;border-radius:16px;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.85)}
+.cli b{color:var(--done);font-weight:500}
+#cursor{position:absolute;width:34px;height:34px;pointer-events:none;filter:drop-shadow(0 3px 6px rgba(0,0,0,.5))}
+</style></head>
+<body><div id="stage">
+<div class="wall"></div>
+<div class="editor" id="editor">
+  <div class="bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span>payments-api — Cursor</span></div>
+  <div class="tree">▾ <b>payments-api</b><br>&nbsp;&nbsp;▸ prisma<br>&nbsp;&nbsp;▾ src<br>&nbsp;&nbsp;&nbsp;&nbsp;▸ ledger<br>&nbsp;&nbsp;&nbsp;&nbsp;▾ payouts<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>payouts.service.ts</b><br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;payouts.spec.ts<br>&nbsp;&nbsp;&nbsp;&nbsp;▸ webhooks<br>&nbsp;&nbsp;package.json<br>&nbsp;&nbsp;tsconfig.json</div>
+  <div class="code"><span class="k">export class</span> <span class="f">PayoutsService</span> {
+  <span class="k">constructor</span>(<span class="k">private readonly</span> db: <span class="f">PrismaService</span>) {}
+
+  <span class="c">// Settle every approved payout older than the cut-off.</span>
+  <span class="k">async</span> <span class="f">settle</span>(cutoff: <span class="f">Date</span>) {
+    <span class="k">const</span> due = <span class="k">await</span> <span class="k">this</span>.db.payout.<span class="f">findMany</span>({
+      where: { status: <span class="s">"APPROVED"</span>, createdAt: { lt: cutoff } },
+      take: <span class="n">500</span>,
+    });
+    <span class="k">for</span> (<span class="k">const</span> p <span class="k">of</span> due) <span class="k">await</span> <span class="k">this</span>.<span class="f">post</span>(p);
+    <span class="k">return</span> due.length;
+  }
+}</div>
+  <div class="term"><span class="o">✻</span> Claude Code
+<span class="muted">&gt;</span> add an idempotency key to settle() and a migration for it
+
+<span class="o">●</span> Reading src/payouts/payouts.service.ts
+<span class="o">●</span> Writing prisma/migrations/20261005_payout_idem/migration.sql
+<span class="o">●</span> Running pnpm prisma migrate deploy …</div>
+</div>
+<div class="dim" id="dim"></div>
+<div id="cap"></div>
+<div id="hud"></div>
+<div id="title"></div>
+<div id="end"></div>
+<svg id="cursor" viewBox="0 0 24 24"><path d="M4 2.5v17.2l4.6-4.3 2.9 6.6 2.9-1.3-2.9-6.4h6.2z" fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"/></svg>
+</div>
+<script>
+const C={perm:'rgb(255,171,82)',done:'rgb(97,245,189)',work:'rgb(115,184,255)',ready:'#9e9e9e',ended:'#6b6b6b',red:'rgb(255,115,128)',violet:'rgb(191,166,255)'};
+const PH={permission:[C.perm,'Needs you'],done:[C.done,'Your turn'],working:[C.work,'Working'],ready:[C.ready,'Ready'],ended:[C.ended,'Ended']};
+const P={check:'M20 6 9 17l-5-5',x:'M18 6 6 18M6 6l12 12',up:'M7 7h10v10M7 17 17 7',reply:'M9 17 4 12l5-5M20 18v-2a4 4 0 0 0-4-4H4',
+  power:'M12 2v10M18.4 6.6a9 9 0 1 1-12.77.04',flame:'M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z',
+  branch:'M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9',
+  shield:'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z',
+  plus:'M5 12h14M12 5v14',gear:'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1',
+  moon:'M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z',laptop:'M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16',
+  radio:'M4.9 19.1C1 15.2 1 8.8 4.9 4.9M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5M19.1 4.9C23 8.8 23 15.1 19.1 19M12 12h.01',
+  archive:'M3 3h18v5H3zM5 8v13h14V8M10 12h4',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
+  cont:'M15 10l5 5-5 5M4 4v7a4 4 0 0 0 4 4h12',ret:'M9 10 4 15l5 5M20 4v7a4 4 0 0 1-4 4H4',chev:'M9 18l6-6-6-6',
+  compact:'M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7',globe:'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20',
+  gauge:'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 12l4-4'};
+const ic=(n,s=10,c='currentColor',fill=false)=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="${fill?c:'none'}" stroke="${c}" stroke-width="${fill?0:2.6}" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="${P[n]}"/></svg>`;
+const cl=x=>Math.max(0,Math.min(1,x)), seg=(t,a,b)=>cl((t-a)/(b-a)), ease=x=>1-Math.pow(1-x,3), eio=x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+const lerp=(a,b,k)=>a+(b-a)*k;
+const fmt=n=>n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?Math.round(n/1e3)+'k':''+n;
+const money=d=>'$'+d.toFixed(2);
+const rgba=(c,a)=>c.replace('rgb(','rgba(').replace(')',`,${a})`);
+
+function dot(phase,t){
+  const c=PH[phase][0];let ring='';
+  if(phase==='working') ring=`<svg viewBox="0 0 18 18" style="transform:rotate(${-(t/1.1)*360}deg)"><circle cx="9" cy="9" r="7.5" fill="none" stroke="${c}" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="${47.1*.68} 99"/></svg>`;
+  if(phase==='permission'){const k=(t%1.3)/1.3,e=1-Math.pow(1-k,2);ring=`<svg viewBox="0 0 18 18"><circle cx="9" cy="9" r="${4*(1+1.2*e)}" fill="none" stroke="${c}" stroke-width="1.5" opacity="${.9*(1-e)}"/></svg>`}
+  return `<div class="dot" style="--c:${c}">${ring}<div class="halo"></div><div class="core"></div></div>`;
+}
+const pill=(id,title,icon,tint='#fff',primary=false,press=0)=>`<span id="${id}" class="pill${primary?' p':''}" style="transform:scale(${1-.06*press});${primary?`background:linear-gradient(180deg,${tint},${rgba(tint.startsWith('#')?'rgb(255,255,255)':tint,.78)})`:`background:${tint.startsWith('#')?'rgba(255,255,255,.08)':rgba(tint,.1)};color:${tint.startsWith('#')?'rgba(255,255,255,.85)':tint}`}">${ic(icon,9.5)}${title}</span>`;
+function ring(tokens){const f=Math.min(1,tokens/200000),c=f>.85?C.red:f>.7?C.perm:'rgba(255,255,255,.45)';
+  return `<div class="ctx" style="color:${c}"><svg width="10" height="10" viewBox="0 0 10 10" style="transform:rotate(-90deg)"><circle cx="5" cy="5" r="4" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="2"/><circle cx="5" cy="5" r="4" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-dasharray="${25.1*f} 99"/></svg>${fmt(tokens)}</div>`}
+
+function card(s,t){
+  const [c,label]=PH[s.phase];const heavy=!!s.heavy;
+  const b=heavy&&s.phase!=='permission'?rgba(C.red,.55):s.phase==='permission'?rgba(c,.5):s.hl?'rgba(255,255,255,.3)':'rgba(255,255,255,.07)';
+  let h=`<div class="card" id="card-${s.id}" style="--b:${b};${s.style||''}"><div class="row" style="gap:10px">${dot(s.phase,t)}
+    <div style="flex:1;min-width:0"><div class="name">${s.name}</div><div class="sub"><span style="color:${c}">${label}</span> · ${s.since}</div></div>
+    <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end"><div class="tok">${fmt(s.tokens)}</div>${ring(s.ctx)}
+    ${s.burn?`<div style="font:600 9px var(--mono);color:${heavy?C.red:'rgba(255,255,255,.35)'}">+${fmt(s.burn)}/10m</div>`:''}</div></div>`;
+  if(s.from) h+=`<div class="row sub" style="color:${C.violet};gap:5px">${ic('cont',10)}continues ${s.from}</div>`;
+  if(s.agents) h+=`<div class="row sub" style="gap:6px;color:rgba(255,255,255,.6)"><span style="color:var(--a1)">${ic('users',10)}</span>${s.agents}</div>`;
+  if(heavy) h+=`<div class="heavy" style="opacity:${s.heavyIn??1}"><div class="flag">${ic('flame',11,C.red,true)}${s.heavy}</div><div class="row" style="gap:6px">${pill('compact-'+s.id,'Compact','compact',C.red)}${pill('fresh-'+s.id,'Fresh session','branch',C.red,true,s.press||0)}</div></div>`;
+  if(s.phase==='working'&&s.activity) h+=`<div class="act"><i></i>${s.activity}</div>`;
+  if(s.req) h+=`<div class="req"><div class="row" style="gap:6px;font:600 11.5px var(--mono)">${ic('shield',12,C.perm,true)}${s.req.tool}</div><div class="cmd">${s.req.detail}</div>
+    <div class="row" style="gap:6px">${pill('allow-'+s.id,'Allow','check',C.perm,true,s.press||0)}${pill('always-'+s.id,'Always','check',C.perm)}${pill('deny-'+s.id,'Deny','x',C.red)}<span style="flex:1"></span>${pill('cur-'+s.id,'Cursor','up')}</div>
+    <div style="font:9.5px var(--mono);color:rgba(255,255,255,.35)">Always = don't ask again for Bash(pnpm prisma:*)</div></div>`;
+  else if(s.phase==='done'&&s.last) h+=`<div class="last">${s.last}</div>`;
+  return h+'</div>';
+}
+function retired(s){return `<div class="retired" id="card-${s.id}" style="${s.style||''}"><div class="row" style="gap:10px"><span style="width:18px;display:grid;place-items:center;color:${C.violet}">${ic('archive',11)}</span>
+  <div style="flex:1"><div class="name" style="color:rgba(255,255,255,.55);text-decoration:line-through;text-decoration-color:rgba(255,255,255,.4)">${s.name}</div><div class="sub" style="color:${C.violet}">Handed off → ${s.next}</div></div>
+  <div style="font:600 11px var(--mono);color:rgba(255,255,255,.35)">${fmt(s.tokens)}</div></div></div>`}
+
+function limit(title,pct,note,fore,hl){
+  const cols=pct>85?['rgb(255,102,128)','rgb(255,64,102)']:pct>60?['rgb(255,204,89)',C.perm]:['rgb(102,242,242)','rgb(115,184,255)'];
+  return `<div class="limit${hl?' hl':''}" style="${hl?'padding:6px;margin:-6px':''}"><div class="row"><span class="lt">${title}</span><span class="lp">${Math.round(pct)}%</span></div>
+  <div class="track"><div class="fill" style="width:${Math.max(2,pct)}%;background:linear-gradient(90deg,${cols[0]},${cols[1]});box-shadow:0 0 10px ${rgba(cols[1].startsWith('rgb(')?cols[1]:C.perm,.6)}"></div></div>
+  <div class="lnote muted">${note}</div>${fore||''}</div>`;
+}
+
+// ---- the story ----
+const D=29;
+function state(t){
+  const grow=(base,rate)=>Math.round(base+rate*t);
+  const perm=t>=8&&t<10.8, s3work=t>=10.8;
+  const heavyOn=t>=16.4, handed=t>=18.7;
+  const s=[
+    {id:'s3',cwd:'payments-api',name:'payments-api',phase:perm?'permission':s3work?'working':'ready',since:perm||s3work?'just now':'4m',tokens:grow(412000,3100),ctx:grow(61000,900),
+      req:perm?{tool:'Bash',detail:'pnpm prisma migrate deploy'}:null,activity:'Bash  pnpm prisma migrate deploy',press:seg(t,10.45,10.6)-seg(t,10.6,10.75)},
+    handed?{id:'s4',cwd:'payments-api',retired:1,name:'ledger-refactor',next:'ledger-refactor-2',tokens:1430000}
+          :{id:'s4',cwd:'payments-api',name:'ledger-refactor',phase:'working',since:'38m',tokens:heavyOn?Math.round(lerp(1180000,1430000,seg(t,16.4,18.6))):grow(990000,9000),ctx:heavyOn?171000:grow(142000,1100),
+            agents:'2 agents · Explore, Plan',burn:heavyOn?1240000:Math.round(310000+t*12000),heavy:heavyOn?'1.2M tokens in the last 10 min':null,heavyIn:ease(seg(t,16.4,16.9)),
+            activity:'Edit  src/ledger/reconcile.ts',press:seg(t,18.25,18.4)-seg(t,18.4,18.55)},
+    ...(handed?[{id:'s5',cwd:'payments-api',name:'ledger-refactor-2',phase:'working',since:'just now',tokens:Math.round(18000+(t-18.7)*14000),ctx:Math.round(22000+(t-18.7)*1500),from:'ledger-refactor',activity:'Read  HANDOFF.md',
+      style:`opacity:${ease(seg(t,18.7,19.2))};transform:translateX(${36*(1-ease(seg(t,18.7,19.2)))}px)`}]:[]),
+    {id:'s1',cwd:'acme-web',name:'checkout-flow',phase:'working',since:'12m',tokens:grow(268000,2600),ctx:grow(88000,700),activity:'Edit  src/cart/Checkout.tsx'},
+    {id:'s2',cwd:'acme-web',name:'acme-web-a3',phase:'done',since:'2m',tokens:184000,ctx:54000,last:'Added the coupon field with validation and 14 passing tests. Want me to wire it to the pricing API next?'},
+  ];
+  return s;
+}
+const hlRegion=t=>t>=3.6&&t<7.8?'cards':t>=12&&t<16.2?'limits':'';
+
+function drawer(t,open){
+  const ss=state(t), urgent=ss.some(s=>s.phase==='permission')?'permission':'working';
+  const tint=urgent==='permission'?rgba(C.perm,.22):rgba(C.work,.22);
+  const five=lerp(46,74,eio(seg(t,12.3,15.2))), fore=seg(t,13.6,14.1);
+  const tokensToday=Math.round(6.1e6+t*41000), cost=38.42+t*.27;
+  const groups=[...new Set(ss.map(s=>s.cwd))];
+  const cards=groups.map((g,gi)=>{const gs=ss.filter(s=>s.cwd===g);const tk=gs.reduce((a,s)=>a+s.tokens,0);
+    return `<div class="ws" style="${gi?'margin-top:6px':''}">${ic('chev',8)}${g.toUpperCase()}<span class="m">${gs.length}</span><span class="line"></span><span class="m">${money(tk/1e6*5.2)} · ${fmt(tk)}</span></div>`+
+      gs.map((s,i)=>{const k=ease(seg(t,3.25+(gi*2+i)*.07,3.75+(gi*2+i)*.07));s.style=(s.style||'')+(t<6?`opacity:${k};transform:translateX(${36*(1-k)}px)`:'');return s.retired?retired(s):card(s,t)}).join('')}).join('');
+  const k=open, x=380*(1-k), sc=.9+.1*k;
+  return `<div class="drawer glass" id="drawer" style="--tint:${tint};transform:translateX(${x}px) scale(${sc});opacity:${k}">
+  <div class="row">${dot(urgent,t)}<span class="brand">CLAUDE</span><span class="muted" style="font:500 10.5px var(--rounded)">${ss.filter(s=>!s.retired).length} live</span>
+    <span class="ibtn">${ic('plus',10)}</span><span class="ibtn">${ic('gear',11)}</span><span class="ibtn">${ic('moon',11)}</span>
+    <span style="margin-left:auto"><div class="money">${money(cost)}</div><div class="small muted" style="text-align:right">${fmt(tokensToday)} tokens today</div></span></div>
+  <div class="limits" id="limits">${limit('5-HOUR',five,'resets in 2h 14m · 17:00',fore?`<div class="lnote" style="color:${C.perm};opacity:${fore}">out ≈ 16:20 at this pace</div>`:'',hlRegion(t)==='limits')}
+    ${limit('WEEKLY',23,'resets in 3d 6h · Thu 09:00',`<div class="lnote" style="color:${rgba(C.done,.7)}">lasts until reset at this pace</div>`,hlRegion(t)==='limits')}</div>
+  <div style="display:flex;flex-direction:column;gap:7px"><div class="row lt" style="gap:6px">${ic('chev',8)}DEVICES<span style="font:600 9.5px var(--mono);color:rgba(255,255,255,.3)">3</span><span style="margin-left:auto;font:600 9.5px var(--mono);letter-spacing:0;color:rgba(255,255,255,.4)">${money(cost+6.1)} today</span></div>
+    <div class="dev"><span class="muted">${ic('laptop',11)}</span><span class="d5" style="background:${C.done}"></span>MacBook Pro · this Mac <span class="muted" style="font-size:9.5px">4 live</span><span class="m">${money(cost)} · ${fmt(tokensToday)}</span></div>
+    <div class="dev"><span class="muted">${ic('laptop',11)}</span><span class="d5" style="background:${C.done}"></span>Mac mini <span class="m">$6.10 · 820k</span></div>
+    <div class="dev"><span class="muted">${ic('radio',10)}</span><span class="d5" style="background:${C.work}"></span>fix-flaky-e2e<span class="m" style="color:rgba(255,255,255,.4);font-weight:500">working</span></div></div>
+  <div class="sep"></div>
+  <div class="cards${hlRegion(t)==='cards'?' hl':''}" style="${hlRegion(t)==='cards'?'padding:6px;margin:-6px':''}">${cards}</div></div>`;
+}
+
+function toast(t){
+  const k=ease(seg(t,21.2,21.8))*(1-ease(seg(t,24.7,25.2)));if(k<=0)return'';
+  const replying=t>=22.55, msg='Yes, wire it to the pricing API and open a PR', n=Math.round(msg.length*seg(t,22.7,24.2));
+  return `<div class="toast glass" id="toast" style="--tint:${rgba(C.done,.22)};transform:translateX(${380*(1-k)}px) scale(${.9+.1*k});opacity:${k};transform-origin:right top">
+   <div class="accent" style="background:${C.done};box-shadow:0 0 12px ${rgba(C.done,.6)}"></div>
+   <div class="row" style="gap:9px">${dot('done',t)}<span class="name" style="font-size:13px">acme-web-a3</span><span class="tag" style="color:${C.done};background:${rgba(C.done,.13)}">YOUR TURN</span>
+    <span style="margin-left:auto" class="ibtn">${ic('x',9)}</span></div>
+   <div class="last" style="font-size:12px;color:rgba(255,255,255,.68)">Added the coupon field with validation and 14 passing tests. Want me to wire it to the pricing API next?</div>
+   ${replying?`<div class="reply" id="replyf"><span style="flex:1">${n?msg.slice(0,n):'<span class="muted">Reply to acme-web-a3…</span>'}${t%1<.55||n<msg.length?'<span class="caret"></span>':''}</span><span style="color:rgba(255,255,255,${n?.8:.25})">${ic('ret',10)}</span></div>`
+     :`<div class="row" style="gap:6px">${pill('replybtn','Reply','reply',C.done,true,seg(t,22.3,22.42)-seg(t,22.42,22.55))}${pill('openbtn','Open','up')}</div>`}
+  </div>`;
+}
+
+const CAPS=[[3.6,7.6,'LIVE STATUS','Every session,<br>one glance','Working, your turn, needs you. Grouped by workspace, with tokens, cost and context fill for each.'],
+  [7.8,11.8,'PERMISSIONS','Answer prompts without switching windows','Allow, Always or Deny straight from the HUD, and Claude keeps going.'],
+  [12,16,'RATE LIMITS','Know when you’ll<br>run out','5-hour and weekly limits with reset countdowns and a forecast at your current pace.'],
+  [16.2,20.6,'HEAVY SESSIONS','Catch runaway sessions early','A session burning tokens fast is flagged. One click hands it off to a fresh session with a handoff note.'],
+  [20.8,25,'TOASTS','Reply without<br>leaving your flow','When Claude finishes, a toast slides in. Reply inline and it lands in the right editor tab.']];
+
+// cursor: [time, target selector or [x,y]]
+const CUR=[[7.6,[1300,900]],[9.2,[1300,900]],[10.3,'#allow-s3'],[11.2,'#allow-s3'],[12.4,[1250,760]],[16.8,[1250,760]],[18.1,'#fresh-s4'],[19.4,'#fresh-s4'],[21.2,[1450,700]],[22.25,'#replybtn'],[22.6,'#replyf'],[24.6,'#replyf'],[25.4,[1500,800]]];
+
+function pos(sel){if(Array.isArray(sel))return sel;const e=document.querySelector(sel);if(!e)return null;const r=e.getBoundingClientRect();return [r.left+r.width*.45,r.top+r.height*.55]}
+let last=[1300,900];
+function cursor(t){
+  const el=document.getElementById('cursor');
+  if(t<7.6||t>25.4){el.style.opacity=0;return}
+  let i=CUR.findIndex(k=>k[0]>t);if(i<0)i=CUR.length;const a=CUR[Math.max(0,i-1)],b=CUR[Math.min(i,CUR.length-1)];
+  const pa=pos(a[1])||last,pb=pos(b[1])||pa,k=a===b?1:eio(seg(t,a[0],b[0]));
+  const p=[lerp(pa[0],pb[0],k),lerp(pa[1],pb[1],k)];last=p;
+  el.style.opacity=Math.min(seg(t,7.6,8),1-seg(t,25,25.4));el.style.left=p[0]-6+'px';el.style.top=p[1]-4+'px';
+}
+
+function render(t,mode){
+  const open=ease(seg(t,3,3.7))*(1-ease(seg(t,20.8,21.3)));
+  const titleK=1-seg(t,2.5,3.1), endK=seg(t,25.3,26);
+  let hud=`<div class="handle" style="height:64px;background:linear-gradient(180deg,${C.work},rgba(115,184,255,.6));box-shadow:-4px 0 14px ${rgba(C.work,.5)};opacity:${(1-open)*(1-endK)*(t>20?1:Math.min(1,t*2))}"></div>`;
+  if(open>0) hud+=drawer(t,open);
+  hud+=toast(t);
+  document.getElementById('hud').innerHTML=hud;
+  document.getElementById('hud').style.opacity=1-endK;
+  const cap=CAPS.find(c=>t>=c[0]-.01&&t<c[1]);
+  const capEl=document.getElementById('cap');
+  if(cap){const k=Math.min(ease(seg(t,cap[0],cap[0]+.5)),1-seg(t,cap[1]-.35,cap[1]));
+    capEl.innerHTML=`<div class="kick">${cap[2]}</div><div class="head">${cap[3]}</div><div class="lede">${cap[4]}</div>`;
+    capEl.style.opacity=k;capEl.style.transform=`translateY(${18*(1-k)}px)`}else capEl.innerHTML='';
+  document.getElementById('dim').style.opacity=Math.max(seg(t,2.6,3.4),endK);
+  document.getElementById('editor').style.filter=`blur(${8*endK}px)`;
+  const T=document.getElementById('title');
+  T.style.opacity=titleK;T.style.transform=`scale(${1+.04*(1-titleK)})`;
+  T.innerHTML=titleK>0?`<div class="logo">${dot('working',t).replace('class="dot"','class="dot" style="zoom:2.2;--c:'+C.work+'"')}CLAUDE HUD</div>
+    <div class="big">Your sessions,<br>at the edge.</div><div class="tagline">A native macOS heads-up display for every Claude Code session, in Cursor, VS Code or any terminal.</div>`:'';
+  T.style.background=`rgba(4,5,10,${.72*titleK})`;
+  const E=document.getElementById('end');E.style.opacity=endK;
+  E.innerHTML=endK>0?`<div class="logo">${dot('done',t).replace('class="dot"','class="dot" style="zoom:2.2;--c:'+C.done+'"')}CLAUDE HUD</div>
+    <div class="big" style="font-size:96px">Stay in flow.<br>Let the HUD watch.</div>
+    <div class="chips"><span class="chip">Native SwiftUI</span><span class="chip">~1.5% CPU</span><span class="chip">No account, no server</span><span class="chip">One install script</span></div>
+    <div class="cli"><b>$</b> git clone https://github.com/Louayzouaoui1/claude-hud && cd claude-hud && ./install.sh</div>`:'';
+  cursor(t);
+}
+const q=new URLSearchParams(location.search);render(+(q.get('t')??4.5));
+</script></body></html>
