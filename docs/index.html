@@ -78,6 +78,33 @@ h1 span{background:linear-gradient(180deg,var(--text),var(--muted));-webkit-back
 .brew button:hover{border-color:var(--blue)}
 .shot{margin:54px auto 0;max-width:var(--max);border-radius:24px;border:1px solid var(--line);overflow:hidden;box-shadow:0 40px 100px -30px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.03) inset;background:var(--bg2)}
 
+
+/* hero v2 */
+.hero{text-align:left;padding:64px 0 24px}
+.hero .grid{display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+.hero h1{margin:20px 0 18px}
+.hero .lead{margin:0}
+.hero .cta{justify-content:flex-start}
+.stage{position:relative;display:grid;place-items:center;padding:20px 0}
+.stage::before{content:"";position:absolute;inset:6% 4%;background:radial-gradient(60% 60% at 50% 45%,rgba(115,184,255,.35),transparent 70%),radial-gradient(40% 40% at 80% 70%,rgba(191,166,255,.28),transparent 70%);filter:blur(30px)}
+.frame{position:relative;border-radius:22px;overflow:hidden;background:#06080f;border:1px solid rgba(255,255,255,.12);box-shadow:0 40px 90px -25px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.03) inset}
+.frame img{width:100%;height:auto}
+.stage .main{width:min(82%,370px);transform:rotate(1.5deg)}
+.stage .float{position:absolute;width:min(78%,340px);left:-6%;bottom:6%;transform:rotate(-2.5deg);animation:bob 6s ease-in-out infinite}
+@keyframes bob{50%{transform:rotate(-2.5deg) translateY(-8px)}}
+@media(max-width:900px){.hero .grid{grid-template-columns:1fr}.hero{text-align:center}.hero .cta{justify-content:center}.hero .lead{margin:0 auto}.stage .float{left:0}}
+@media(prefers-reduced-motion:reduce){.stage .float{animation:none}}
+
+/* bento */
+.bento{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:56px}
+.col{display:contents}
+.tile{padding:28px;border:1px solid var(--line);border-radius:26px;background:linear-gradient(180deg,var(--card),var(--bg2));display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.tile h3{font-size:clamp(22px,2.6vw,28px);line-height:1.15;letter-spacing:-.02em;margin:8px 0 10px}
+.tile p{color:var(--muted);margin:0 0 22px;font-size:16px}
+.tile .frame{margin:auto 0 28px;border-radius:16px}
+.tile .pad{margin-top:auto;padding-bottom:0}
+@media(max-width:900px){.bento{grid-template-columns:1fr}}
+
 /* stats */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:56px 0 8px}
 .stat{padding:22px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
@@ -159,27 +186,33 @@ footer a:hover{color:var(--text)}
 <main id="main">
 <header class="hero" id="top">
   <div class="wrap">
-    <span class="eyebrow"><b>Free</b> · open source · macOS and Windows</span>
-    <h1><span>Your sessions,<br>at the edge.</span></h1>
-    <p class="lead">A native heads-up display for every Claude Code session: what each one is doing, what it costs, how close you are to your limits, and which one needs you next.</p>
+    <div class="grid">
+      <div>
+        <span class="eyebrow"><b>Free</b> · open source · macOS and Windows</span>
+        <h1><span>Your sessions,<br>at the edge.</span></h1>
+        <p class="lead">A native heads-up display for every Claude Code session: what each one is doing, what it costs, how close you are to your limits, and which one needs you next.</p>
 
-    <div class="cta">
-      <a class="btn primary" id="dl-main" href="https://github.com/Louayzouaoui1/claude-hud/releases/latest">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg>
-        <span class="t"><span id="dl-main-label">Download</span><small id="dl-main-sub">Latest release</small></span>
-      </a>
-      <a class="btn" id="dl-alt" href="https://github.com/Louayzouaoui1/claude-hud/releases/latest">
-        <span class="t"><span id="dl-alt-label">Also for Windows</span><small id="dl-alt-sub">x64 · ARM64 · x86</small></span>
-      </a>
+        <div class="cta">
+          <a class="btn primary" id="dl-main" href="https://github.com/Louayzouaoui1/claude-hud/releases/latest">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg>
+            <span class="t"><span id="dl-main-label">Download</span><small id="dl-main-sub">Latest release</small></span>
+          </a>
+          <a class="btn" id="dl-alt" href="https://github.com/Louayzouaoui1/claude-hud/releases/latest">
+            <span class="t"><span id="dl-alt-label">Also for Windows</span><small id="dl-alt-sub">x64 · ARM64 · x86</small></span>
+          </a>
+        </div>
+        <div class="ver" id="ver">Always the latest build</div>
+
+        <div class="brew">
+          <code><span class="pre">$</span>brew install --cask louayzouaoui1/claude-hud/claude-hud</code>
+          <button type="button" id="copy" aria-label="Copy the Homebrew command">Copy</button>
+        </div>
+      </div>
+      <div class="stage" aria-label="The Claude HUD drawer and a reply toast">
+        <div class="frame main"><img src="p-drawer.webp" width="1180" height="2208" alt="The Claude HUD drawer: five-hour and weekly limits, three devices, and live sessions grouped by workspace with tokens, cost and context for each."></div>
+        <div class="frame float"><img src="p-toast.webp" width="1124" height="516" alt="A toast saying the acme-web-a3 session is waiting for you, with a reply box."></div>
+      </div>
     </div>
-    <div class="ver" id="ver">Always the latest build</div>
-
-    <div class="brew">
-      <code><span class="pre">$</span>brew install --cask louayzouaoui1/claude-hud/claude-hud</code>
-      <button type="button" id="copy" aria-label="Copy the Homebrew command">Copy</button>
-    </div>
-
-    <div class="shot rv"><img src="sessions.png" width="1920" height="1080" alt="The Claude HUD drawer next to an editor: four live sessions grouped by workspace, with tokens, cost and context for each, plus 5-hour and weekly limit bars."></div>
 
     <div class="stats rv" role="list">
       <div class="stat" role="listitem"><b>2</b><span>platforms: macOS 14+ and Windows</span></div>
@@ -196,32 +229,20 @@ footer a:hover{color:var(--text)}
     <h2>Stay in flow.<br>Let the HUD watch.</h2>
     <p class="sub">It sits at the edge of your screen, out of the way, and speaks up only when a session needs you.</p></div>
 
-    <div class="feat rv">
-      <div class="copy"><div class="kicker">Permissions</div><h3>Answer prompts from the HUD</h3>
-        <p>Allow, Always or Deny, and Claude carries on. Questions with options show up as buttons you can tick, with a typed answer when none fits. You never have to switch windows.</p>
-        <div class="chips"><span class="chip">Allow / Always / Deny</span><span class="chip">Multi-select questions</span><span class="chip">Pass back to editor</span></div></div>
-      <div class="img"><img loading="lazy" src="f-permission.png" width="480" height="948" alt="A permission prompt shown in the HUD with Allow, Always and Deny buttons."></div>
+    <div class="bento"><div class="col c7">
+      <article class="tile rv"><div class="kicker">Permissions</div><h3>Answer prompts from the HUD</h3>
+        <p>Allow, Always or Deny and Claude carries on. Questions with options show up as buttons you can tick, with a typed answer when none fits.</p>
+        <div class="frame"><img loading="lazy" src="p-permission.webp" width="1024" height="626" alt="A permission request for a Bash command with Allow, Always, Deny and Cursor buttons."></div></article>
+      <article class="tile rv"><div class="kicker">Cost control</div><h3>Catch runaway sessions</h3>
+        <p>A session burning tokens fast gets flagged. Compact it, or start a fresh one in the same workspace with a handoff note built from the old transcript.</p>
+        <div class="frame"><img loading="lazy" src="p-heavy.webp" width="1024" height="654" alt="A heavy session flagged for 1.2 million tokens in 10 minutes with Compact and Fresh session buttons."></div></article>
+      <article class="tile rv"><div class="kicker">Limits</div><h3>Rate limits, with a forecast</h3>
+        <p>Reset countdowns, and whether your pace will last until the reset. Usage from other devices counts too.</p>
+        <div class="frame inset"><img loading="lazy" src="p-limits.webp" width="1024" height="286" alt="Five-hour limit at 74 percent, out at 16:20 at this pace, and the weekly limit at 23 percent."></div></article>
+      <article class="tile rv"><div class="kicker">Toasts</div><h3>Reply right from the toast</h3>
+        <p>When Claude finishes, a toast slides in. Type a reply and it lands in that session. Payment and access errors alert you too.</p>
+        <div class="frame inset"><img loading="lazy" src="p-toast.webp" width="1124" height="516" alt="A toast with a reply box being typed into."></div></article>
     </div>
-
-    <div class="feat rv">
-      <div class="copy"><div class="kicker">Limits</div><h3>Rate limits, with a forecast</h3>
-        <p>The 5-hour and weekly bars show reset countdowns and tell you whether your current pace will last until the reset. Usage spent elsewhere, like claude.ai, your phone or another machine, is counted too.</p>
-        <div class="chips"><span class="chip">Reset countdowns</span><span class="chip">Pace forecast</span><span class="chip">Multi-device</span></div></div>
-      <div class="img"><img loading="lazy" src="f-limits.png" width="480" height="948" alt="Five-hour and weekly limit bars with reset countdowns and a forecast."></div>
-    </div>
-
-    <div class="feat rv">
-      <div class="copy"><div class="kicker">Cost control</div><h3>Catch runaway sessions</h3>
-        <p>A session burning tokens fast gets flagged. Start a fresh one in the same workspace with a handoff note built from the old transcript, at no token cost. Plus save-tokens tips from your own usage.</p>
-        <div class="chips"><span class="chip">Heavy-session alerts</span><span class="chip">Fresh session handoff</span><span class="chip">One-click fixes</span></div></div>
-      <div class="img"><img loading="lazy" src="f-heavy-session.png" width="480" height="948" alt="A heavy session flagged in the HUD with a Fresh session action."></div>
-    </div>
-
-    <div class="feat rv">
-      <div class="copy"><div class="kicker">Toasts</div><h3>Reply right from the toast</h3>
-        <p>When Claude finishes, a toast slides in. Type a reply and it lands in that session's tab. Payment problems and access errors alert you too, and confirm when things are working again.</p>
-        <div class="chips"><span class="chip">Inline reply</span><span class="chip">Error alerts</span><span class="chip">Global hotkey</span></div></div>
-      <div class="img"><img loading="lazy" src="f-toast-reply.png" width="480" height="202" alt="A toast announcing a finished session with a reply box."></div>
     </div>
 
     <div class="more rv">

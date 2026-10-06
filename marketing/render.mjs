@@ -1,5 +1,6 @@
 // Renders scene.html with headless Chrome over CDP (no npm deps; Node 22+ has WebSocket).
 //   node render.mjs stills            -> ../docs/*.png
+//   node render.mjs panels           -> ../docs/p-*.png (each HUD element on its own, 2x, for the landing page)
 //   node render.mjs video             -> ../docs/claude-hud.mp4 (+ demo.gif)
 import { spawn, execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -41,12 +42,28 @@ async function shot(t, file) {
   writeFileSync(file, Buffer.from(result.data, "base64"));
 }
 
+async function panel(t, sel, pad, file) {
+  const { result } = await send("Runtime.evaluate", { returnByValue: true, expression: `(()=>{render(${t});
+    document.getElementById('editor').style.display='none';document.getElementById('dim').style.opacity=0;
+    document.getElementById('stage').style.background='#06080f';for(const id of ['cap','title','end'])document.getElementById(id).innerHTML='';
+    const r=document.querySelector('${sel}').getBoundingClientRect();return {x:r.left,y:r.top,w:r.width,h:r.height}})()` });
+  const r = result.result.value;
+  const { result: shot } = await send("Page.captureScreenshot", { format: "png",
+    clip: { x: Math.max(0, r.x - pad), y: Math.max(0, r.y - pad), width: r.w + pad * 2, height: r.h + pad * 2, scale: 1 } });
+  writeFileSync(file, Buffer.from(shot.data, "base64"));
+}
+
 const mode = process.argv[2] || "stills";
 mkdirSync(docs, { recursive: true });
 if (mode === "stills") {
   await load(1920, 1080, 1);
   for (const [t, name] of [[1.2, "hero"], [5.5, "sessions"], [10.0, "permission"], [15.4, "limits"], [17.6, "heavy-session"], [24.0, "toast-reply"], [27.5, "install"]])
     await shot(t, join(docs, `${name}.png`));
+} else if (mode === "panels") {
+  await load(1920, 1080, 2);
+  for (const [t, sel, pad, name] of [[5.5, "#drawer", 40, "drawer"], [10.0, "#card-s3", 26, "permission"], [15.4, "#limits", 26, "limits"],
+    [17.6, "#card-s4", 26, "heavy"], [24.0, "#toast", 26, "toast"]])
+    await panel(t, sel, pad, join(docs, `p-${name}.png`));
 } else {
   const fps = 30, dur = 29, dir = join(tmpdir(), "hud-frames");
   rmSync(dir, { recursive: true, force: true });
