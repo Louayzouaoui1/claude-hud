@@ -1,0 +1,19 @@
+# Builds every pull request (and runs the tests, once there are some) so contributors get feedback.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore: ["Casks/**", "docs/**", "marketing/**", "*.md"]
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build
+      - name: Test
+        run: if [ -d Tests ]; then swift test; else echo "No tests yet (see issue #2)"; fi
+      - name: Shell scripts parse
+        run: for f in hooks/*.sh scripts/*.sh install.sh; do sh -n "$f"; done
