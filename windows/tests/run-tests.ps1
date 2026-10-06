@@ -235,6 +235,7 @@ try {
   $cpu = ($samples | Measure-Object -Minimum).Minimum
   $mem = $proc.WorkingSet64 / 1MB
   $limit = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -and $Build -ne 'dist') { 14 } else { 6 }   # x64/x86 builds run emulated on ARM64; steady state is ~2% native
+  if ($env:CI) { $limit = [Math]::Max($limit, 10) }   # shared CI machines are noisy; this still catches a runaway render loop (~30%)
   Check ("idle CPU under {0}% of one core ({1:N1}%)" -f $limit, $cpu) ($cpu -lt $limit)
   Check ("memory under 220 MB ({0:N0} MB)" -f $mem) ($mem -lt 220)
 

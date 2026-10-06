@@ -67,6 +67,8 @@ powershell -ExecutionPolicy Bypass -File tests\run-tests.ps1 -Build dist-x64
 
 The tests run against a throwaway fake home (`CLAUDE_HUD_HOME`), so your real `~/.claude`, registry and editor are never touched. They drive the real UI through Windows UI Automation and the mouse. Coverage includes hooks fed garbage, empty input, 1.5 MB inputs and 40 parallel calls, safe `settings.json` edits (including invalid JSON and BOMs), every answer type, questions, killed hooks, ended sessions, account errors with recovery, edge hover, single instance, self-repair, and idle CPU and memory.
 
+The `windows` workflow (`.github/workflows/windows.yml`) builds and runs these tests on `windows-latest` for every pull request, for both the AnyCPU and x86 builds. Each run uploads the built `.exe` files, and a failing run also uploads a screenshot and the HUD's logs.
+
 ## Uninstall
 
 **Settings › Apps › Claude HUD › Uninstall**, or:
