@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import SwiftUI
+import HUDCore
 
 extension Store {
   // MARK: actions

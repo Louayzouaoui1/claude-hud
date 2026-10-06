@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import HUDCore
 
 // Host apps, processes and formatting.
 struct Editor { let name: String, bundle: String, scheme: String }
@@ -36,26 +37,6 @@ func cursorWindowTitle(_ bundle: String = editor.bundle) -> String? {
   return title as? String
 }
 
-/// "15:42" today, "Sat 14:00" later.
-func clock(_ d: Date) -> String {
-  let f = DateFormatter()
-  f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : "EEE HH:mm"
-  return f.string(from: d)
-}
-
-func money(_ d: Double) -> String { d >= 100 ? String(format: "$%.0f", d) : String(format: "$%.2f", d) }
-
-/// API list price per million tokens (input, output, cache read). Cache writes cost 1.25× input (5 min) / 2× (1 h).
-func price(_ model: String) -> (i: Double, o: Double, r: Double) {
-  if model.contains("fable") || model.contains("mythos") { return (10, 50, 0.25) }
-  if model.contains("opus-5-5") { return (4, 20, 0.2) }
-  if model.contains("opus-4-1") || model.contains("opus-4-2025") { return (15, 75, 1.5) }
-  if model.contains("opus") { return (5, 25, 0.5) }
-  if model.contains("sonnet-5") { return (2, 10, 0.2) }
-  if model.contains("sonnet") { return (3, 15, 0.3) }
-  if model.contains("haiku") { return (1, 5, 0.1) }
-  return (5, 25, 0.5)
-}
 struct Limit: Equatable {
   let pct: Double, resets: Date
   var out: Date?        // when it runs out at the current pace (only if before the reset)
@@ -70,15 +51,6 @@ struct Toast: Identifiable, Equatable {
   var title = ""
   var heavy = false
   let created = Date()
-}
-
-func fmt(_ n: Int) -> String {
-  n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1e6) : n >= 1000 ? String(format: "%.0fk", Double(n) / 1e3) : "\(n)"
-}
-
-func span(_ s: TimeInterval) -> String {
-  let s = max(0, Int(s)), h = s / 3600, m = s % 3600 / 60
-  return h >= 24 ? "\(h / 24)d \(h % 24)h" : h > 0 ? "\(h)h \(m)m" : "\(m)m"
 }
 
 /// The Claude process's own working directory = the Cursor workspace (a hook's cwd follows `cd`).

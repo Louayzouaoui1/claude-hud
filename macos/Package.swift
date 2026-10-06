@@ -5,7 +5,9 @@ let package = Package(
   name: "ClaudeHUD",
   platforms: [.macOS(.v14)],
   targets: [
-    .executableTarget(name: "ClaudeHUD", path: "Sources/ClaudeHUD")
+    .target(name: "HUDCore", path: "Sources/HUDCore"),
+    .executableTarget(name: "ClaudeHUD", dependencies: ["HUDCore"], path: "Sources/ClaudeHUD"),
+    .testTarget(name: "ClaudeHUDTests", dependencies: ["HUDCore"])
   ],
   swiftLanguageVersions: [.v5]
 )
