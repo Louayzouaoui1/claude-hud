@@ -4,9 +4,10 @@ Thanks for helping out! Issues and pull requests are welcome.
 
 ## Build and run
 
-You need macOS 14+, the Xcode command-line tools and `jq`.
+You need macOS 14+, the Xcode command-line tools and `jq`. The Mac app lives in `macos/`, the Windows port in `windows/` (see its README).
 
 ```sh
+cd macos
 swift build          # quick compile check
 ./install.sh         # build, install, wire the hooks, restart the app
 ```
@@ -14,7 +15,7 @@ swift build          # quick compile check
 ## Layout
 
 ```
-Sources/ClaudeHUD/
+macos/Sources/ClaudeHUD/
   main.swift            app startup
   App.swift             panel, hotkey, menu-bar item, settings wiring
   Config.swift          paths, preferences, themes, hotkeys
@@ -23,9 +24,10 @@ Sources/ClaudeHUD/
   TokenCounter.swift    token and cost counting from transcripts
   Store/                state (Store.swift) plus usage, events, permissions and actions
   Views/                drawer, cards, toasts, settings, shared primitives
-hooks/                  event.sh, perm.sh, statusline.sh: Claude Code hooks that feed the app
-scripts/bundle.sh       builds dist/ClaudeHUD.app (universal)
-scripts/setup-hooks.sh  wires the hooks into ~/.claude/settings.json (or --remove)
+macos/hooks/            event.sh, perm.sh, statusline.sh: Claude Code hooks that feed the app
+macos/scripts/bundle.sh builds macos/dist/ClaudeHUD.app (universal)
+macos/scripts/setup-hooks.sh  wires the hooks into ~/.claude/settings.json (or --remove)
+windows/                native Windows port (C#), tested by .github/workflows/windows.yml
 Casks/claude-hud.rb     Homebrew cask, bumped automatically on release
 ```
 
@@ -33,7 +35,7 @@ The hook scripts talk to the app through files in `~/.claude/hud/`.
 
 ## Releases
 
-Every push to `main` that touches `Sources/`, `hooks/`, `scripts/` or `Package.swift` runs `.github/workflows/release.yml`. It builds a universal app, publishes it as release `v1.1.<run>` and updates the cask, so `brew upgrade` picks it up.
+Every push to `main` that touches `macos/` or `windows/` runs `.github/workflows/release.yml`. It builds a universal Mac app and the Windows zip, publishes it as release `v1.1.<run>` and updates the cask, so `brew upgrade` picks it up.
 
 ## Pull requests
 

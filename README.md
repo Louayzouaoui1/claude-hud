@@ -61,7 +61,7 @@ Update with `brew upgrade --cask claude-hud`. Every change merged to `main` is b
 Needs the Xcode command-line tools (`xcode-select --install`) and `jq` (`brew install jq`).
 
 ```sh
-git clone https://github.com/Louayzouaoui1/claude-hud && cd claude-hud && ./install.sh
+git clone https://github.com/Louayzouaoui1/claude-hud && cd claude-hud/macos && ./install.sh
 ```
 
 Both ways do the same setup:
