@@ -1,11 +1,12 @@
 # Every push to main that touches the app builds a universal ClaudeHUD.app, publishes it as a
 # GitHub release and points the Homebrew cask at it, so `brew upgrade` always gets the latest.
+# The same release also carries the Windows build (ClaudeHUD-windows-<version>.zip).
 name: release
 
 on:
   push:
     branches: [main]
-    paths: ["Sources/**", "Package.swift", "hooks/**", "scripts/**"]
+    paths: ["Sources/**", "Package.swift", "hooks/**", "scripts/**", "windows/**"]
   workflow_dispatch:
 
 permissions:
@@ -46,3 +47,27 @@ jobs:
           git commit -m "Cask: Claude HUD $VERSION"
           git pull --rebase origin main
           git push origin HEAD:main
+
+  windows:
+    needs: release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and package
+        run: |
+          $v = "1.1.${{ github.run_number }}"
+          .\windows\build.ps1
+          $pkg = "ClaudeHUD-windows-$v"
+          New-Item -ItemType Directory -Force "$pkg\dist" | Out-Null
+          Copy-Item windows\dist\ClaudeHUD.exe, windows\dist\hud-hook.exe, windows\dist\claudehud.ico "$pkg\dist"
+          Copy-Item windows\install.ps1, windows\uninstall.ps1, "windows\Install Claude HUD.cmd" $pkg
+          Compress-Archive -Path $pkg -DestinationPath "$pkg.zip"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v1.1.${{ github.run_number }}" "ClaudeHUD-windows-1.1.${{ github.run_number }}.zip"

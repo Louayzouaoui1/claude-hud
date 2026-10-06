@@ -2,7 +2,7 @@
 
 # Claude HUD
 
-A native macOS heads-up display for every [Claude Code](https://claude.com/claude-code) session you run. It sits at the edge of your screen and shows what each session is doing, what it has cost, how close you are to your limits, and which session needs you next. You can answer from the HUD without switching windows.
+A native macOS and Windows heads-up display for every [Claude Code](https://claude.com/claude-code) session you run. It sits at the edge of your screen and shows what each session is doing, what it has cost, how close you are to your limits, and which session needs you next. You can answer from the HUD without switching windows.
 
 <p align="center"><img src="docs/demo.gif" alt="Claude HUD demo" width="100%"></p>
 
@@ -45,7 +45,7 @@ The HUD is driven by Claude Code hooks, so monitoring works wherever Claude Code
 
 ## Install
 
-Requires macOS 14+. **On Windows?** See [windows/](windows/README.md): a native port for x64, ARM64 and x86 that installs with a double-click.
+Requires macOS 14+. **On Windows?** Download `ClaudeHUD-windows-*.zip` from the [latest release](https://github.com/Louayzouaoui1/claude-hud/releases/latest), unzip and double-click `Install Claude HUD.cmd` (x64, ARM64 and x86). Details in [windows/](windows/README.md).
 
 ### Homebrew
 
