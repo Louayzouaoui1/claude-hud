@@ -287,13 +287,13 @@ function render(t,mode){
   const T=document.getElementById('title');
   T.style.opacity=titleK;T.style.transform=`scale(${1+.04*(1-titleK)})`;
   T.innerHTML=titleK>0?`<div class="logo">${dot('working',t).replace('class="dot"','class="dot" style="zoom:2.2;--c:'+C.work+'"')}CLAUDE HUD</div>
-    <div class="big">Your sessions,<br>at the edge.</div><div class="tagline">A native macOS heads-up display for every Claude Code session, in Cursor, VS Code or any terminal.</div>`:'';
+    <div class="big">Your sessions,<br>at the edge.</div><div class="tagline">A native heads-up display for every Claude Code session. On macOS and Windows, in Cursor, VS Code or any terminal.</div>`:'';
   T.style.background=`rgba(4,5,10,${.72*titleK})`;
   const E=document.getElementById('end');E.style.opacity=endK;
   E.innerHTML=endK>0?`<div class="logo">${dot('done',t).replace('class="dot"','class="dot" style="zoom:2.2;--c:'+C.done+'"')}CLAUDE HUD</div>
     <div class="big" style="font-size:96px">Stay in flow.<br>Let the HUD watch.</div>
-    <div class="chips"><span class="chip">Native SwiftUI</span><span class="chip">~1.5% CPU</span><span class="chip">No account, no server</span><span class="chip">One install script</span></div>
-    <div class="cli"><b>$</b> git clone https://github.com/Louayzouaoui1/claude-hud && cd claude-hud && ./install.sh</div>`:'';
+    <div class="chips"><span class="chip">macOS + Windows</span><span class="chip">Native, ~1.5% CPU</span><span class="chip">No account, no server</span><span class="chip">Free and open source</span></div>
+    <div class="cli"><b>$</b> brew install --cask louayzouaoui1/claude-hud/claude-hud</div>`:'';
   cursor(t);
 }
 const q=new URLSearchParams(location.search);render(+(q.get('t')??4.5));

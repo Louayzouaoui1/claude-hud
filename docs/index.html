@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude HUD</title>
+<meta name="description" content="A native heads-up display for every Claude Code session on macOS and Windows: live status, costs, rate-limit forecasts and permission answers from the edge of your screen.">
+<meta name="theme-color" content="#05060a">
+<meta property="og:title" content="Claude HUD: your Claude Code sessions, at the edge">
+<meta property="og:description" content="Live status, costs, rate-limit forecasts and permission answers for every Claude Code session. Free, open source, macOS and Windows.">
+<meta property="og:image" content="https://louayzouaoui1.github.io/claude-hud/social-preview.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%2373b8ff' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%2373b8ff'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#05060a; --bg2:#0b0d14; --card:#0e1018; --line:rgba(255,255,255,.09);
+  --text:#f3f5f9; --muted:#9aa3b2; --blue:#73b8ff; --violet:#bfa6ff; --green:#5eead4;
+  --r:20px; --max:1120px;
+}
+:root[data-theme="light"]{
+  --bg:#f6f7fb; --bg2:#eceff6; --card:#ffffff; --line:rgba(10,15,30,.12);
+  --text:#0b0f1a; --muted:#566074; --blue:#1d6fd6; --violet:#6b4bd6; --green:#0b9486;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f6f7fb; --bg2:#eceff6; --card:#ffffff; --line:rgba(10,15,30,.12);
+    --text:#0b0f1a; --muted:#566074; --blue:#1d6fd6; --violet:#6b4bd6; --green:#0b9486;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:17px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+img,video{max-width:100%;display:block}
+.wrap{max-width:var(--max);margin:0 auto;padding:0 20px}
+:focus-visible{outline:3px solid var(--blue);outline-offset:3px;border-radius:8px}
+.skip{position:absolute;left:-999px;top:8px;background:var(--blue);color:#001;padding:8px 14px;border-radius:8px;z-index:20}
+.skip:focus{left:8px}
+
+/* nav */
+nav{position:sticky;top:0;z-index:10;backdrop-filter:blur(14px) saturate(160%);background:color-mix(in srgb,var(--bg) 78%,transparent);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;gap:18px;height:62px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;font-size:14px;text-decoration:none}
+.dot{width:20px;height:20px;border-radius:50%;border:2.5px solid var(--blue);display:grid;place-items:center}
+.dot::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--blue);animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{50%{transform:scale(.55);opacity:.6}}
+nav .links{margin-left:auto;display:flex;gap:6px;align-items:center}
+nav .links a{padding:8px 12px;border-radius:10px;text-decoration:none;color:var(--muted);font-size:15px}
+nav .links a:hover{color:var(--text);background:var(--line)}
+nav .links .gh{border:1px solid var(--line);color:var(--text)}
+@media(max-width:640px){nav .links a.hide-sm{display:none}}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:10px;padding:14px 22px;border-radius:14px;font-weight:600;font-size:16px;text-decoration:none;border:1px solid var(--line);background:var(--card);color:var(--text);transition:transform .15s,border-color .15s,background .15s;cursor:pointer;font-family:inherit}
+.btn:hover{transform:translateY(-2px);border-color:var(--blue)}
+.btn:active{transform:translateY(0)}
+.btn.primary{background:linear-gradient(135deg,#73b8ff,#9a8cff);color:#04060d;border-color:transparent;box-shadow:0 10px 34px -8px rgba(115,184,255,.55)}
+.btn.primary:hover{box-shadow:0 14px 40px -6px rgba(115,184,255,.7)}
+.btn svg{width:20px;height:20px;flex:none}
+.btn small{display:block;font-weight:500;font-size:12px;opacity:.75;line-height:1.1;margin-top:2px}
+.btn .t{display:block;line-height:1.15;text-align:left}
+
+/* hero */
+.hero{position:relative;padding:72px 0 40px;text-align:center;overflow:hidden}
+.hero::before{content:"";position:absolute;inset:-20% -10% auto;height:640px;background:radial-gradient(60% 60% at 50% 0%,rgba(115,184,255,.22),transparent 70%),radial-gradient(40% 50% at 85% 10%,rgba(191,166,255,.18),transparent 70%);pointer-events:none}
+.eyebrow{display:inline-flex;gap:8px;align-items:center;padding:6px 14px;border:1px solid var(--line);border-radius:99px;font-size:13px;color:var(--muted);background:var(--card)}
+.eyebrow b{color:var(--green)}
+h1{font-size:clamp(42px,8vw,88px);line-height:1.02;letter-spacing:-.035em;margin:22px 0 18px;font-weight:800}
+h1 span{background:linear-gradient(180deg,var(--text),var(--muted));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lead{max-width:640px;margin:0 auto;color:var(--muted);font-size:clamp(17px,2.4vw,21px)}
+.cta{display:flex;flex-wrap:wrap;gap:14px;justify-content:center;margin:34px 0 14px}
+.ver{font-size:14px;color:var(--muted)}
+.brew{display:inline-flex;align-items:center;gap:10px;margin-top:22px;padding:10px 12px 10px 18px;border:1px solid var(--line);border-radius:14px;background:var(--card);font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;max-width:100%}
+.brew code{overflow-x:auto;white-space:nowrap}
+.brew .pre{color:var(--green);margin-right:8px}
+.brew button{border:1px solid var(--line);background:var(--bg2);color:var(--text);border-radius:9px;padding:6px 12px;cursor:pointer;font:inherit;font-size:13px}
+.brew button:hover{border-color:var(--blue)}
+.shot{margin:54px auto 0;max-width:var(--max);border-radius:24px;border:1px solid var(--line);overflow:hidden;box-shadow:0 40px 100px -30px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.03) inset;background:var(--bg2)}
+
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:56px 0 8px}
+.stat{padding:22px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
+.stat b{display:block;font-size:30px;letter-spacing:-.02em}
+.stat span{color:var(--muted);font-size:14px}
+@media(max-width:760px){.stats{grid-template-columns:repeat(2,1fr)}}
+
+/* features */
+section{padding:84px 0}
+.kicker{font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--blue);font-weight:700}
+h2{font-size:clamp(30px,5vw,50px);line-height:1.08;letter-spacing:-.03em;margin:10px 0 14px}
+p.sub{color:var(--muted);max-width:560px;margin:0}
+.feat{display:grid;grid-template-columns:1fr 1.25fr;gap:44px;align-items:center;margin-top:84px}
+.feat:nth-of-type(even){grid-template-columns:1.25fr 1fr}
+.feat:nth-of-type(even) .copy{order:2}
+.feat .img{border-radius:24px;border:1px solid var(--line);overflow:hidden;display:grid;place-items:center;padding:32px 20px;background:radial-gradient(70% 60% at 50% 30%,rgba(115,184,255,.16),transparent 70%),linear-gradient(160deg,#0b1024,#05060a);box-shadow:0 30px 70px -30px rgba(0,0,0,.6)}
+.feat .img img{width:min(100%,400px);height:auto;border-radius:18px}
+.feat h3{font-size:clamp(26px,3.6vw,38px);line-height:1.12;letter-spacing:-.025em;margin:8px 0 12px}
+.feat p{color:var(--muted);margin:0}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.chip{padding:5px 12px;border:1px solid var(--line);border-radius:99px;font-size:13px;color:var(--muted);background:var(--card)}
+@media(max-width:860px){.feat,.feat:nth-of-type(even){grid-template-columns:1fr;gap:22px;margin-top:60px}.feat:nth-of-type(even) .copy{order:0}}
+
+.more{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:64px}
+.more div{padding:22px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
+.more b{display:block;margin-bottom:6px}
+.more span{color:var(--muted);font-size:15px}
+@media(max-width:860px){.more{grid-template-columns:1fr}}
+
+/* video */
+.video{margin-top:34px;border-radius:24px;overflow:hidden;border:1px solid var(--line);background:#000;box-shadow:0 40px 100px -30px rgba(0,0,0,.6)}
+.video video{width:100%;height:auto}
+
+/* install */
+.band{background:var(--bg2);border-block:1px solid var(--line)}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:40px}
+.card{padding:28px;border:1px solid var(--line);border-radius:var(--r);background:var(--card);display:flex;flex-direction:column;gap:14px}
+.card h3{margin:0;font-size:24px;display:flex;align-items:center;gap:10px}
+.card h3 svg{width:24px;height:24px}
+.card ol{margin:0;padding-left:20px;color:var(--muted);font-size:15px}
+.card ol li{margin:4px 0}
+.card .btn{align-self:flex-start;margin-top:auto}
+.card code,.inline{font:13.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--bg2);border:1px solid var(--line);padding:2px 7px;border-radius:7px;color:var(--text)}
+.note{color:var(--muted);font-size:14px;margin-top:22px}
+@media(max-width:760px){.cards{grid-template-columns:1fr}}
+
+footer{padding:40px 0 60px;color:var(--muted);font-size:14px}
+footer .wrap{display:flex;flex-wrap:wrap;gap:16px 28px;align-items:center;justify-content:space-between}
+footer nav,footer .fl{display:flex;gap:18px;position:static;border:0;background:none;backdrop-filter:none;height:auto}
+footer a{text-decoration:none}
+footer a:hover{color:var(--text)}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(22px);transition:opacity .7s ease,transform .7s ease}
+.rv.in{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .rv{opacity:1;transform:none;transition:none}
+  .dot::after{animation:none}
+  .btn{transition:none}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<nav aria-label="Main">
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="dot" aria-hidden="true"></span>Claude HUD</a>
+    <div class="links">
+      <a class="hide-sm" href="#features">Features</a>
+      <a class="hide-sm" href="#demo">Demo</a>
+      <a href="#download">Download</a>
+      <a class="gh" href="https://github.com/Louayzouaoui1/claude-hud" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<main id="main">
+<header class="hero" id="top">
+  <div class="wrap">
+    <span class="eyebrow"><b>Free</b> · open source · macOS and Windows</span>
+    <h1><span>Your sessions,<br>at the edge.</span></h1>
+    <p class="lead">A native heads-up display for every Claude Code session: what each one is doing, what it costs, how close you are to your limits, and which one needs you next.</p>
+
+    <div class="cta">
+      <a class="btn primary" id="dl-main" href="https://github.com/Louayzouaoui1/claude-hud/releases/latest">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg>
+        <span class="t"><span id="dl-main-label">Download</span><small id="dl-main-sub">Latest release</small></span>
+      </a>
+      <a class="btn" id="dl-alt" href="https://github.com/Louayzouaoui1/claude-hud/releases/latest">
+        <span class="t"><span id="dl-alt-label">Also for Windows</span><small id="dl-alt-sub">x64 · ARM64 · x86</small></span>
+      </a>
+    </div>
+    <div class="ver" id="ver">Always the latest build</div>
+
+    <div class="brew">
+      <code><span class="pre">$</span>brew install --cask louayzouaoui1/claude-hud/claude-hud</code>
+      <button type="button" id="copy" aria-label="Copy the Homebrew command">Copy</button>
+    </div>
+
+    <div class="shot rv"><img src="sessions.png" width="1920" height="1080" alt="The Claude HUD drawer next to an editor: four live sessions grouped by workspace, with tokens, cost and context for each, plus 5-hour and weekly limit bars."></div>
+
+    <div class="stats rv" role="list">
+      <div class="stat" role="listitem"><b>2</b><span>platforms: macOS 14+ and Windows</span></div>
+      <div class="stat" role="listitem"><b>~1.5%</b><span>CPU, native code only</span></div>
+      <div class="stat" role="listitem"><b>0</b><span>accounts, servers or telemetry</span></div>
+      <div class="stat" role="listitem"><b>MIT</b><span>licensed, contributions welcome</span></div>
+    </div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <div class="rv"><div class="kicker">What it does</div>
+    <h2>Stay in flow.<br>Let the HUD watch.</h2>
+    <p class="sub">It sits at the edge of your screen, out of the way, and speaks up only when a session needs you.</p></div>
+
+    <div class="feat rv">
+      <div class="copy"><div class="kicker">Permissions</div><h3>Answer prompts from the HUD</h3>
+        <p>Allow, Always or Deny, and Claude carries on. Questions with options show up as buttons you can tick, with a typed answer when none fits. You never have to switch windows.</p>
+        <div class="chips"><span class="chip">Allow / Always / Deny</span><span class="chip">Multi-select questions</span><span class="chip">Pass back to editor</span></div></div>
+      <div class="img"><img loading="lazy" src="f-permission.png" width="480" height="948" alt="A permission prompt shown in the HUD with Allow, Always and Deny buttons."></div>
+    </div>
+
+    <div class="feat rv">
+      <div class="copy"><div class="kicker">Limits</div><h3>Rate limits, with a forecast</h3>
+        <p>The 5-hour and weekly bars show reset countdowns and tell you whether your current pace will last until the reset. Usage spent elsewhere, like claude.ai, your phone or another machine, is counted too.</p>
+        <div class="chips"><span class="chip">Reset countdowns</span><span class="chip">Pace forecast</span><span class="chip">Multi-device</span></div></div>
+      <div class="img"><img loading="lazy" src="f-limits.png" width="480" height="948" alt="Five-hour and weekly limit bars with reset countdowns and a forecast."></div>
+    </div>
+
+    <div class="feat rv">
+      <div class="copy"><div class="kicker">Cost control</div><h3>Catch runaway sessions</h3>
+        <p>A session burning tokens fast gets flagged. Start a fresh one in the same workspace with a handoff note built from the old transcript, at no token cost. Plus save-tokens tips from your own usage.</p>
+        <div class="chips"><span class="chip">Heavy-session alerts</span><span class="chip">Fresh session handoff</span><span class="chip">One-click fixes</span></div></div>
+      <div class="img"><img loading="lazy" src="f-heavy-session.png" width="480" height="948" alt="A heavy session flagged in the HUD with a Fresh session action."></div>
+    </div>
+
+    <div class="feat rv">
+      <div class="copy"><div class="kicker">Toasts</div><h3>Reply right from the toast</h3>
+        <p>When Claude finishes, a toast slides in. Type a reply and it lands in that session's tab. Payment problems and access errors alert you too, and confirm when things are working again.</p>
+        <div class="chips"><span class="chip">Inline reply</span><span class="chip">Error alerts</span><span class="chip">Global hotkey</span></div></div>
+      <div class="img"><img loading="lazy" src="f-toast-reply.png" width="480" height="202" alt="A toast announcing a finished session with a reply box."></div>
+    </div>
+
+    <div class="more rv">
+      <div><b>Every session at a glance</b><span>Sorted by what needs you first and grouped by workspace, with live subagents.</span></div>
+      <div><b>Keyboard first</b><span>A global hotkey and full keyboard control, with search across sessions.</span></div>
+      <div><b>Private by design</b><span>Everything stays on your machine. No account, no server, no telemetry.</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="demo" class="band">
+  <div class="wrap">
+    <div class="rv"><div class="kicker">See it move</div><h2>30 seconds, start to finish</h2></div>
+    <div class="video rv"><video controls preload="none" poster="hero.png" playsinline><source src="claude-hud.mp4" type="video/mp4">Your browser can't play this video. <a href="claude-hud.mp4">Download it</a>.</video></div>
+  </div>
+</section>
+
+<section id="download">
+  <div class="wrap">
+    <div class="rv"><div class="kicker">Get it</div><h2>Install in under a minute</h2>
+    <p class="sub">Two platforms, one project. Both builds are published automatically from the repository on every release.</p></div>
+
+    <div class="cards rv">
+      <div class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>macOS</h3>
+        <ol>
+          <li>Needs macOS 14 or newer.</li>
+          <li>Run the Homebrew command, or download the zip and drag the app to Applications.</li>
+          <li>Allow Accessibility access so the HUD can land in the right editor window.</li>
+        </ol>
+        <code>brew install --cask louayzouaoui1/claude-hud/claude-hud</code>
+        <a class="btn primary" id="dl-mac" href="https://github.com/Louayzouaoui1/claude-hud/releases/latest"><span class="t">Download for macOS<small id="dl-mac-sub">Universal · Apple silicon + Intel</small></span></a>
+      </div>
+      <div class="card">
+        <h3><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.500 10.500 4.500v6.900H3V5.500Zm8.500-1.100L21 3v8.400h-9.500V4.400ZM3 12.600h7.500v6.900L3 18.500v-5.900Zm8.500 0H21V21l-9.500-1.300v-7.100Z"/></svg>Windows</h3>
+        <ol>
+          <li>Runs on x64, ARM64 and x86. Nothing else to install.</li>
+          <li>Download and unzip the archive.</li>
+          <li>Double-click <span class="inline">Install Claude HUD.cmd</span>. The same step updates it later.</li>
+        </ol>
+        <span class="note" style="margin:0">Windows may show a SmartScreen notice because the app is not code-signed yet. Choose “More info”, then “Run anyway”.</span>
+        <a class="btn primary" id="dl-win" href="https://github.com/Louayzouaoui1/claude-hud/releases/latest"><span class="t">Download for Windows<small id="dl-win-sub">x64 · ARM64 · x86</small></span></a>
+      </div>
+    </div>
+    <p class="note rv">Claude HUD works with Claude Code in Cursor, VS Code, and any terminal. It reads local session data through Claude Code's own hooks.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>Made by <a href="https://github.com/Louayzouaoui1" rel="noopener"><u>Louay Zouaoui</u></a>. Windows version contributed by Monem.</div>
+    <div class="fl">
+      <a href="https://github.com/Louayzouaoui1/claude-hud" rel="noopener">GitHub</a>
+      <a href="https://github.com/Louayzouaoui1/claude-hud/releases" rel="noopener">Releases</a>
+      <a href="https://github.com/Louayzouaoui1/claude-hud/issues" rel="noopener">Issues</a>
+      <a href="https://github.com/Louayzouaoui1/claude-hud/blob/main/CONTRIBUTING.md" rel="noopener">Contribute</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var REPO="Louayzouaoui1/claude-hud", REL="https://github.com/"+REPO+"/releases/latest";
+  var $=function(id){return document.getElementById(id)};
+  var ua=navigator.userAgent||"", isWin=/Windows/i.test(ua), isMac=/Mac/i.test(ua)&&!/iPhone|iPad/i.test(ua);
+  var macUrl=REL, winUrl=REL;
+
+  function paint(){
+    $("dl-mac").href=macUrl; $("dl-win").href=winUrl;
+    var winFirst=isWin&&!isMac;
+    $("dl-main").href=winFirst?winUrl:macUrl;
+    $("dl-main-label").textContent=winFirst?"Download for Windows":"Download for macOS";
+    $("dl-main-sub").textContent=winFirst?"x64 · ARM64 · x86":"Universal · Apple silicon + Intel";
+    $("dl-alt").href=winFirst?macUrl:winUrl;
+    $("dl-alt-label").textContent=winFirst?"Also for macOS":"Also for Windows";
+    $("dl-alt-sub").textContent=winFirst?"macOS 14 or newer":"x64 · ARM64 · x86";
+  }
+  paint();
+
+  // Point the buttons straight at the latest build; the /releases/latest fallback above keeps working if the API is unreachable.
+  try{
+    fetch("https://api.github.com/repos/"+REPO+"/releases/latest",{headers:{Accept:"application/vnd.github+json"}})
+      .then(function(r){return r.ok?r.json():Promise.reject()})
+      .then(function(rel){
+        (rel.assets||[]).forEach(function(a){
+          if(/^ClaudeHUD-windows-.*\.zip$/.test(a.name)) winUrl=a.browser_download_url;
+          else if(/^ClaudeHUD-[\d.]+\.zip$/.test(a.name)) macUrl=a.browser_download_url;
+        });
+        paint();
+        var d=rel.published_at?new Date(rel.published_at).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}):"";
+        $("ver").textContent="Latest: "+rel.name+(d?" · "+d:"");
+      }).catch(function(){});
+  }catch(e){}
+
+  $("copy").addEventListener("click",function(){
+    var b=this, cmd="brew install --cask louayzouaoui1/claude-hud/claude-hud";
+    function done(){b.textContent="Copied";setTimeout(function(){b.textContent="Copy"},1800)}
+    if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(cmd).then(done,function(){});
+  });
+
+  var els=document.querySelectorAll(".rv");
+  if("IntersectionObserver" in window&&!matchMedia("(prefers-reduced-motion: reduce)").matches){
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add("in");io.unobserve(e.target)}})},{threshold:.12});
+    els.forEach(function(e){io.observe(e)});
+  } else els.forEach(function(e){e.classList.add("in")});
+})();
+</script>
+</body>
+</html>
