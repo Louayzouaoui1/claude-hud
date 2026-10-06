@@ -1,0 +1,65 @@
+# Builds the Windows app and runs its end-to-end tests on every pull request, so changes get checked on
+# Windows without anyone needing a Windows machine. AnyCPU runs natively as x64 on the runner; the x86
+# build covers 32-bit. The tests drive the real UI (UI Automation + mouse) against a throwaway home dir.
+name: windows
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore: ["Casks/**", "docs/**", "marketing/**", "*.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: windows (${{ matrix.platform }})
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [anycpu, x86]
+    defaults:
+      run:
+        shell: powershell  # Windows PowerShell 5.1, what the scripts target (not pwsh)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: .\windows\build.ps1 -Platform ${{ matrix.platform }}
+
+      - name: Test
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File windows\tests\run-tests.ps1 -KeepHome
+
+      - name: Screenshot and logs on failure
+        if: failure()
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'hud-failure'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save((Join-Path $out 'screen.png'))
+          Get-ChildItem $env:TEMP -Directory -Filter 'claudehud-test-*' | ForEach-Object {
+            Copy-Item -Recurse (Join-Path $_.FullName '.claude\hud') (Join-Path $out $_.Name) -ErrorAction SilentlyContinue
+          }
+          Copy-Item (Join-Path $env:APPDATA 'ClaudeHUD\error.log') $out -ErrorAction SilentlyContinue
+
+      - name: Upload failure details
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-${{ matrix.platform }}
+          path: ${{ runner.temp }}/hud-failure
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.platform }}
+          path: |
+            windows/dist/ClaudeHUD.exe
+            windows/dist/hud-hook.exe

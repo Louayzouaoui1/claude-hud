@@ -45,7 +45,7 @@ The HUD is driven by Claude Code hooks, so monitoring works wherever Claude Code
 
 ## Install
 
-Requires macOS 14+.
+Requires macOS 14+. **On Windows?** See [windows/](windows/README.md): a native port for x64, ARM64 and x86 that installs with a double-click.
 
 ### Homebrew
 
