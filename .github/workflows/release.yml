@@ -41,12 +41,14 @@ jobs:
 
       - name: Bump the cask
         run: |
+          # Start from the latest main: an overlapping run may have bumped the cask since this one checked out.
+          git fetch origin main
+          git reset -q --hard origin/main
           sed -i '' -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 .*/  sha256 \"$SHA\"/" Casks/claude-hud.rb
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Casks/claude-hud.rb
           git commit -m "Cask: Claude HUD $VERSION"
-          git pull --rebase origin main
           git push origin HEAD:main
 
   windows:
