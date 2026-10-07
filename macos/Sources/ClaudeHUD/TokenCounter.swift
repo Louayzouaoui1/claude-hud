@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import HUDCore
 
 // MARK: - Token counting (background, incremental over today's transcripts)
 

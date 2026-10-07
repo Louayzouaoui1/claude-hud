@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 
+import HUDCore
 // MARK: - Model
 
 enum Phase: Int {

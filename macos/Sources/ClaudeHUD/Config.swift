@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import SwiftUI
+import HUDCore
 
 let home = FileManager.default.homeDirectoryForCurrentUser
 let hudDir = home.appendingPathComponent(".claude/hud")
