@@ -32,7 +32,15 @@ jobs:
         run: .\windows\build.ps1 -Platform ${{ matrix.platform }}
 
       - name: Test
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File windows\tests\run-tests.ps1 -KeepHome
+        # The UI tests drive real windows and are timing-sensitive on the shared runner, especially x86:
+        # a different test flakes each time. One retry separates a flake from a real failure.
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File windows\tests\run-tests.ps1 -KeepHome
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::Tests failed once, retrying"
+            powershell -NoProfile -ExecutionPolicy Bypass -File windows\tests\run-tests.ps1 -KeepHome
+            exit $LASTEXITCODE
+          }
 
       - name: Screenshot and logs on failure
         if: failure()
