@@ -6,18 +6,25 @@ name: shipskit
 on:
   pull_request_target:
     types: [closed]
+  # By hand, for any pull request: Actions > shipskit > Run workflow, or `gh workflow run shipskit.yml -f pr=5`.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Number of the pull request to film
+        required: true
 
 permissions:
-  contents: read
+  contents: write # the videos are kept on a release named shipskit-videos
   pull-requests: write
 
 jobs:
   video:
-    if: github.event.pull_request.merged
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged
     runs-on: macos-latest # the built-in voices need macOS; with a Gemini key any runner would do
     timeout-minutes: 20
     steps:
       - uses: Louayzouaoui1/shipskit@v1
         with:
+          pr-url: ${{ inputs.pr && format('{0}/{1}/pull/{2}', github.server_url, github.repository, inputs.pr) || '' }}
           claude-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           gemini-key: ${{ secrets.GEMINI_API_KEY }}
