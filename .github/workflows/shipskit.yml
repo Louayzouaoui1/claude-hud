@@ -1,0 +1,23 @@
+# Makes a short video of each merged pull request with shipskit and comments a link to it on the
+# pull request. The pull request's code is never checked out or run: only its title, description
+# and diff are read, as text.
+name: shipskit
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  video:
+    if: github.event.pull_request.merged
+    runs-on: macos-latest # the built-in voices need macOS; with a Gemini key any runner would do
+    timeout-minutes: 20
+    steps:
+      - uses: Louayzouaoui1/shipskit@v1
+        with:
+          claude-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          gemini-key: ${{ secrets.GEMINI_API_KEY }}
